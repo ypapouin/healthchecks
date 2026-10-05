@@ -191,3 +191,35 @@ have regular, automatic database backups set up.</p>
 <h2>Next Steps</h2>
 <p>Get the <a href="https://github.com/healthchecks/healthchecks">source code</a>.</p>
 <p>See <a href="../self_hosted_configuration/">Configuration</a> for a list of configuration options.</p>
+<h2 id="check-dependencies">Upgrading to Check Dependencies</h2>
+<p>The dependency migration is additive. Existing checks start without a parent.
+<code>last_success</code> is deliberately left empty until the next accepted success ping;
+it is not inferred from historical pings. Processed notifications are not replayed.</p>
+<p>Apply migrations, then restart the web processes and <strong>all</strong> <code>sendalerts</code> workers
+before configuring dependencies:</p>
+<div class="highlight"><pre><span></span><code>./manage.py migrate
+</code></pre></div>
+
+<p>Waiting incidents and recovery deadlines are stored in the database and survive
+worker restarts. Due notifications are evaluated in bounded batches; idle waits
+are polled every ten seconds and relevant pings or hierarchy edits make them due
+sooner. The normal worker loop adds up to about two seconds of polling latency.
+Network calls happen outside database transactions. As before, delivery is
+reserved before calling integrations: a crash after reservation can lose a
+notification, and a reservation does not mean an integration accepted it.</p>
+<p>All application paths acquire project locks before changing the dependency graph
+or claiming an alert. This favors consistent decisions across workers, at the
+cost of serializing concurrent pings and edits within one project. PostgreSQL
+provides row locking; SQLite serializes writers. Direct SQL or queryset updates
+that bypass these application paths must not be used to edit dependencies.</p>
+<p>With StatsD configured, monitor these cumulative counters:</p>
+<ul>
+<li><code>hc.dependencies.deferred</code>: timeout notifications entering parent wait.</li>
+<li><code>hc.dependencies.released</code>: deferred notifications released after recovery grace
+  or an explicit failure signal.</li>
+<li><code>hc.dependencies.cancelled</code>: pending timeout notifications cancelled by recovery
+  or pausing the child.</li>
+</ul>
+<p>The <strong>Pending alerts</strong> filter provides the current pending count per project.
+Availability reports continue to include actual downtime during notification
+suspension.</p>

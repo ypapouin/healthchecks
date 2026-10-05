@@ -1,0 +1,9 @@
+{% if dependency.state == "waiting" %}
+<span class="label label-warning">Waiting for {% for blocker in dependency.blockers %}{{ blocker.name }}{% if not forloop.last %}, {% endif %}{% empty %}parent verification{% endfor %}</span>
+{% elif dependency.state == "resuming" %}
+<span class="label label-info" data-deadline="{{ dependency.notification_after }}">Recovery grace until {{ dependency.notification_after }}</span>
+{% elif dependency.state == "claimed" %}
+<span class="checks-subline">Alert claimed for delivery</span>
+{% elif dependency.state == "cancelled" %}
+<span class="checks-subline">Alert cancelled</span>
+{% endif %}

@@ -280,7 +280,14 @@ class Profile(models.Model):
 
         if nag:
             # For nags, only show checks that are currently down
-            checks = [c for c in checks if c.get_status() == "down"]
+            from hc.api.dependencies import DependencyGraph
+
+            graphs = {pk: DependencyGraph(pk) for pk in {c.project_id for c in checks}}
+            checks = [
+                c
+                for c in checks
+                if c.get_status() == "down" and graphs[c.project_id].permits_reminder(c)
+            ]
             if not checks:
                 return False
             ctx["checks"] = checks

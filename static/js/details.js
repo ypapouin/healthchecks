@@ -86,13 +86,26 @@ $(function () {
     var dateFormatter = new DateFormatter(initialTz);
     var lastStatusText = "";
     var lastUpdated = "";
+    var lastDependencyUpdated = "";
     var lastStarted = false;
     adaptiveSetInterval(function() {
         $.ajax({
-            url: statusUrl + (lastUpdated ? "?u=" + lastUpdated : ""),
+            url: statusUrl + (lastUpdated ? "?u=" + encodeURIComponent(lastUpdated) + "&d=" + lastDependencyUpdated : ""),
             dataType: "json",
             timeout: 2000,
             success: function(data) {
+                lastDependencyUpdated = data.dependency_updated || "";
+                if (data.dependency) {
+                    updateDependencyStatus(document.getElementById("dependency-status"), data.dependency);
+                    $("#dependency-path").text(data.dependency.ancestors.map(a => a.name).join(" → ") || "No ancestors");
+                    var blockers = document.getElementById("dependency-blockers");
+                    blockers.replaceChildren();
+                    data.dependency.blockers.forEach(function (b) {
+                        var li = document.createElement("li");
+                        li.textContent = b.name + ": " + b.reason + ". Last success: " + (b.last_success || "never") + ".";
+                        blockers.appendChild(li);
+                    });
+                }
                 if (data.status_text != lastStatusText) {
                     lastStatusText = data.status_text;
                     $("#current-status-icon").attr("class", "status ic-" + data.status);

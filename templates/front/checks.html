@@ -60,6 +60,10 @@
 {% endif %}
 
 {% if checks %}
+<div class="btn-group" id="check-view" role="group" aria-label="Check view">
+    <button type="button" class="btn btn-default active" data-view="list" aria-pressed="true">List</button>
+    <button type="button" class="btn btn-default" data-view="hierarchy" aria-pressed="false">Hierarchy</button>
+</div>
 <div id="check-filters">
     <div id="my-checks-tags">
     {% for tag, status, tooltip in tags %}
@@ -78,6 +82,7 @@
             </button>
             <ul class="dropdown-menu dropdown-menu-right">
                 <li class="header">Filter by status</li>
+                <li><a href="javascript:;" data-value="pending">Pending alerts (<span id="pending-count">{{ num_pending }}</span>)</a></li>
                 <li>
                     <a href="javascript:;" data-value="new">
                         <span class="status ic-new"></span> New
@@ -136,6 +141,7 @@
         {% if 'down' not in selected_statuses %}style="display: none"{% endif %}
         data-value="down">Down ×</button>
 
+    <button class="filter-btn btn btn-default" data-value="pending" {% if 'pending' not in selected_statuses %}style="display:none"{% endif %}>Pending alerts ×</button>
     {% if rw %}
     <button
         class="btn btn-primary"
@@ -236,6 +242,7 @@
 <script src="{% static 'js/adaptive-setinterval.js' %}"></script>
 <script src="{% static 'js/dates.js' %}"></script>
 <script src="{% static 'js/ping_details.js' %}"></script>
+<script src="{% static 'js/dependencies.js' %}"></script>
 <script src="{% static 'js/checks.js' %}"></script>
 <script src="{% static 'js/add-check-modal.js' %}"></script>
 <script src="{% static 'js/slug-suggestions.js' %}"></script>

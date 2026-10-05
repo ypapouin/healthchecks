@@ -152,3 +152,64 @@ With these settings, SITE_NAME will classify a HTTP ping as a success signal
 if and only if the request body contains text "Backup successful". If the request
 body does not contain this string (or the request body is absent altogether),
 it will classify the ping as a failure signal.
+
+## Check Dependencies {#check-dependencies}
+
+A check can have one parent in the same project. Parents can have multiple
+children, forming a hierarchy. Configure the parent when adding a check or in
+**Dependencies** on its details page. **Add children / edit selection** replaces
+the direct children; the selector shows which existing parents will be replaced.
+Self references, cycles, and dependencies across projects are rejected atomically.
+
+Dependencies control timeout notifications. Checks still become Down on time,
+and their event logs and uptime reports retain the actual downtime. A timeout
+notification can be sent only when every non-paused ancestor is currently Up and has
+received an accepted success signal at or after the child's original grace start.
+Late, Down, and New ancestors block the notification. Start, failure,
+ignored, and log pings do not count as successes. Cron, OnCalendar, and `/start`
+use the same grace start as the normal schedule calculation.
+
+A paused ancestor is completely ignored: neither its health nor its last success
+is required. The dependency path remains traversable, so the child still checks
+the grandparents and other ancestors above the paused check. This also applies
+to consecutive paused ancestors. If all ancestors are paused, timeout alerts
+behave as though the check had no dependencies.
+
+A blocked timeout waits without sending an alert. Once all non-paused ancestors qualify,
+the child gets a new recovery grace period using the grace duration captured
+when the incident started. Further parent successes do not extend it. An ancestor
+becoming ineligible interrupts the grace; recovery starts a fresh one, even if
+that ancestor failed and recovered between alert worker polls. A parent change
+also rechecks unsent alerts and invalidates the affected recovery grace.
+
+Pausing a blocking parent rechecks its descendants and, if no other ancestor
+blocks them, starts their recovery grace. Pausing a parent during an existing
+recovery grace does not interrupt or extend that grace. Resuming the parent
+restores its normal requirements: New, Late, Down, or a missing recent success
+blocks its descendants again.
+
+A child success while its timeout is waiting cancels both the pending Down alert
+and the corresponding Up alert. If the Down alert was already claimed for
+delivery, its recovery remains notifiable. An explicit failure signal always
+alerts immediately, even while parents are unavailable. During a deferred timeout
+it releases the existing incident with a failure notification reason, preserving
+the original timeout in the downtime history.
+
+Periodic reminders also ignore paused ancestors, require all other ancestors to
+qualify, and exclude pending incidents.
+Regular availability reports remain based on real downtime.
+
+The checks table defaults to **List**, with the parent displayed below each name.
+**Hierarchy** indents children and supports collapsible branches; your choice is
+saved per project in this browser. The current sort applies within each sibling
+group. Searching or filtering retains ancestors as context and opens matching
+paths. **Pending alerts** filters waiting and recovery-grace incidents. Badges,
+blocking reasons, last successful signals, and recovery deadlines refresh even
+when a check remains Down.
+
+Deleting a parent detaches its direct children. Transferring a check detaches both
+its parent and direct children; descendants stay in their project. Copying keeps
+the parent, but not children, runtime state, or incidents. Pausing a child cancels
+its pending timeout; as a parent it becomes transparent to its descendants. Clearing a check's
+history also clears its success and incident data. Routine log pruning retains
+pending timeout incidents.

@@ -4,6 +4,7 @@
     class="table {% if rw %}rw{% endif%}"
     {% if num_visible == 0 %}style="display: none"{% endif %}
     data-status-url="{% url 'hc-status' project.code %}"
+    data-project="{{ project.code }}"
     data-profile-tz="{{ profile_tz }}">
     <tr>
         <th></th>
@@ -61,12 +62,13 @@
         <th></th>
     </tr>
     {% for check in checks %}
-    <tr id="{{ check.code }}" class="checks-row" {% if check in hidden_checks %}style="display: none"{% endif %}>
+    <tr id="{{ check.code }}" class="checks-row" data-parent="{{ check.dependency_info.parent.id|default:'' }}" data-pending="{{ check.dependency_info.pending|yesno:'true,false' }}" {% if check in hidden_checks %}style="display: none"{% endif %}>
         <td>
             <span class="status ic-{{ check.cached_status }}" data-toggle="tooltip"></span>
             <div class="spinner {% if check.last_start %}started{% endif %}"></div>
         </td>
-        <td>
+        <td class="check-name-cell">
+            <button type="button" class="dependency-toggle btn btn-xs" aria-label="Toggle children" aria-expanded="true" hidden>▾</button>
             <div data-name="{{ check.name }}"
                  data-slug="{{ check.slug }}"
                  data-tags="{{ check.tags }}"
@@ -77,6 +79,8 @@
                 <span class="label label-tag">{{ tag }}</span>
                 {% endfor %}
             </div>
+            <div class="dependency-parent checks-subline">{% if check.dependency_info.parent %}Parent: {{ check.dependency_info.parent.name }}{% endif %}</div>
+            <div class="dependency-status" aria-live="polite">{% include "front/dependency_status.html" with dependency=check.dependency_info %}</div>
         </td>
         <td class="hidden-xs hidden-sm hidden-md">
             {% if project.show_slugs and not check.slug %}

@@ -161,3 +161,12 @@ body.dark #checks-table .integrations span.off {
 #url-style-switcher a.active {
     text-decoration:  underline;
 }
+
+/* Dependency information remains readable without color or hover. */
+.dependency-status { margin-top: 5px; white-space: normal; }
+.dependency-status .label { display: inline-block; white-space: normal; text-align: left; line-height: 1.4; }
+.dependency-toggle[hidden] { display: none; }
+.dependency-toggle { float: left; margin-right: 4px; }
+.hierarchy .dependency-parent { display: none; }
+.dependency-context .my-checks-name { opacity: 0.7; }
+#check-view { margin: 10px 0; }

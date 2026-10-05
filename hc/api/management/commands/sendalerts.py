@@ -15,6 +15,7 @@ from django.core.management.base import BaseCommand
 from django.db import close_old_connections, connection
 from django.utils.timezone import now
 
+from hc.api.dependencies import DependencyGraph, evaluate, locked_check
 from hc.api.models import Check, Flip
 from hc.lib.statsd import statsd
 
@@ -102,18 +103,44 @@ class Command(BaseCommand):
         if not self.seats.acquire(timeout=1):
             return False  # Workers busy, main thread should wait a bit
 
-        flip = Flip.objects.filter(processed=None).first()
+        flip = (
+            Flip.objects.filter(processed=None, next_evaluation__lte=now())
+            .order_by("next_evaluation", "id")
+            .first()
+        )
         if flip is None:
             self.seats.release()
-            return False  # No work found, main thread should wait a bit
+            return False
 
-        # Mark the flip as processed:
-        q = Flip.objects.filter(id=flip.id, processed=None)
-        num_updated = q.update(processed=now())
-        if num_updated != 1:
+        try:
+            with locked_check(flip.owner) as check:
+                flip = Flip.objects.get(pk=flip.pk)
+                if (
+                    flip.processed is not None
+                    or flip.next_evaluation is None
+                    or flip.next_evaluation > now()
+                ):
+                    self.seats.release()
+                    return True
+                flip.owner = check
+                if not evaluate(flip, DependencyGraph(check.project_id)):
+                    self.seats.release()
+                    return True
+                # Claim under the same lock used by pings and hierarchy edits.
+                # Recovery after this point remains notifiable. Network I/O is
+                # outside this transaction, retaining existing at-most-once delivery.
+                flip.processed = now()
+                flip.notification_state = "claimed"
+                flip.next_evaluation = None
+                flip.save(
+                    update_fields=("processed", "notification_state", "next_evaluation")
+                )
+        except (Check.DoesNotExist, Flip.DoesNotExist):
             self.seats.release()
-            # Nothing got updated: another sendalerts process got there first.
             return True
+        except Exception:
+            self.seats.release()
+            raise
 
         statsd.incr("hc.sendalerts.processFlip")
         f = self.executor.submit(notify, flip)
@@ -138,41 +165,45 @@ class Command(BaseCommand):
         if check is None:
             return False
 
-        old_status = check.status
-        q = Check.objects.filter(id=check.id, status=old_status)
+        with locked_check(check) as check:
+            if (
+                check.status == "down"
+                or check.alert_after is None
+                or check.alert_after >= now()
+            ):
+                return True
+            old_status = check.status
+            try:
+                status = check.get_status()
+            except Exception:
+                logger.exception("Cannot calculate status for %s", check.code)
+                Check.objects.filter(pk=check.pk).update(
+                    alert_after=now() + td(hours=1)
+                )
+                return True
+            if status != "down":
+                Check.objects.filter(pk=check.pk).update(
+                    alert_after=check.going_down_after()
+                )
+                return True
 
-        try:
-            status = check.get_status()
-        except Exception:
-            # Make sure we don't trip on this check again for an hour:
-            # Otherwise sendalerts may end up in a crash loop.
-            q.update(alert_after=now() + td(hours=1))
-            # Then re-raise the exception:
-            raise
-
-        if status != "down":
-            # It is not down yet. Update alert_after
-            q.update(alert_after=check.going_down_after())
-            return True
-
-        flip_time = check.going_down_after()
-        # In theory, going_down_after() can return None, but:
-        # get_status() just reported status "down", so "going_down_after()"
-        # must be able to calculate precisely when the check's state flipped.
-        assert flip_time
-
-        # Atomically update status
-        num_updated = q.update(alert_after=None, status="down")
-        if num_updated != 1:
-            # Nothing got updated: another worker process got there first.
-            return True
-
-        flip = Flip(owner=check)
-        flip.created = flip_time
-        flip.old_status = old_status
-        flip.new_status = "down"
-        flip.reason = "timeout"
-        flip.save()
+            grace_start = check.get_grace_start()
+            flip_time = check.going_down_after()
+            assert flip_time is not None
+            Check.objects.filter(pk=check.pk).update(
+                alert_after=None, status="down", up_since=None
+            )
+            check.status = "down"
+            flip = Flip.objects.create(
+                owner=check,
+                created=flip_time,
+                old_status=old_status,
+                new_status="down",
+                reason="timeout",
+                grace_start=grace_start,
+                incident_grace=check.grace,
+            )
+            evaluate(flip, DependencyGraph(check.project_id))
 
         return True
 
@@ -188,7 +219,8 @@ class Command(BaseCommand):
 
         if pool:
             self.stdout.write(
-                "WARNING: The --pool argument is not supported any more and will be ignored.\n"
+                "WARNING: The --pool argument is not supported any more "
+                "and will be ignored.\n"
             )
 
         self.seats = BoundedSemaphore(num_workers)
@@ -200,12 +232,14 @@ class Command(BaseCommand):
         self.stdout.write("sendalerts is now running\n")
         while not self.shutdown:
             # Create flips for any checks going down
-            while self.handle_going_down() and not self.shutdown:
-                pass
+            for _ in range(100):
+                if self.shutdown or not self.handle_going_down():
+                    break
 
             # Submit unprocessed flips to the self.executor
-            while self.process_one_flip() and not self.shutdown:
-                pass
+            for _ in range(100):
+                if self.shutdown or not self.process_one_flip():
+                    break
 
             # Either all workers are busy or there are no unprocessed flips.
             # Wait a bit:

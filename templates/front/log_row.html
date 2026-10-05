@@ -31,6 +31,15 @@
     <td></td><td></td><td></td>
     <td colspan="2">
         Status: <strong>{{ event.old_status }} ➔ {{ event.new_status }}</strong>.
+        {% if event.reason == "timeout" %}
+        <div class="checks-subline">
+            {% if event.notification_state == "waiting" %}Timeout alert waiting for parents.
+            {% elif event.notification_state == "resuming" %}Recovery grace until {{ event.resume_after|date:"c" }}.
+            {% elif event.notification_state == "cancelled" %}Timeout alert cancelled before delivery; recovery is silent.
+            {% elif event.notification_state == "claimed" %}Timeout alert released for delivery{% if event.notification_reason == "fail" %} by an explicit failure signal{% endif %}.
+            {% else %}Timeout alert ready for evaluation.{% endif %}
+        </div>
+        {% endif %}
     </td>
 </tr>
 {% endif %}

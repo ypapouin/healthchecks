@@ -12,8 +12,9 @@ from uuid import UUID
 
 from cronsim import CronSim, CronSimError
 from django.conf import settings
+from django.core.exceptions import ValidationError as ModelValidationError
 from django.core.signing import BadSignature
-from django.db import connection
+from django.db import connection, transaction
 from django.db.models import Prefetch
 from django.db.models.functions import Length
 from django.http import (
@@ -37,6 +38,7 @@ from pydantic_core import PydanticCustomError
 
 from hc.accounts.models import Profile, Project
 from hc.api.decorators import ApiRequest, authorize, authorize_read, cors
+from hc.api.dependencies import DependencyGraph, lock_projects, locked_check
 from hc.api.forms import FlipsFiltersForm
 from hc.api.models import Channel, Check, Flip, Notification, Ping, prepare_durations
 from hc.lib.badges import check_signature, get_badge_svg, get_badge_url
@@ -59,6 +61,10 @@ def guess_kind(schedule: str) -> str:
 
 
 class Spec(BaseModel):
+    parent: str | None = Field(
+        None,
+        pattern=r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+    )
     channels: str | None = None
     desc: str | None = Field(None, max_length=10000)
     failure_kw: str | None = Field(None, max_length=200)
@@ -88,7 +94,7 @@ class Spec(BaseModel):
         # float. None of the fields have a float type, and we are using
         # strict validation, so this will cause type validation to fail.
         for k, v in data.items():
-            if v is None:
+            if v is None and k != "parent":
                 data[k] = 0.0
         return data
 
@@ -313,6 +319,19 @@ def _lookup(project: Project, spec: Spec) -> Check | None:
 
 
 def _update(check: Check, spec: Spec, v: int) -> None:
+    if check.pk:
+        with locked_check(check) as current:
+            if current.project_id != check.project_id:
+                raise Check.DoesNotExist
+            _update_locked(current, spec, v)
+        check.refresh_from_db()
+    else:
+        with transaction.atomic():
+            lock_projects(check.project_id)
+            _update_locked(check, spec, v)
+
+
+def _update_locked(check: Check, spec: Spec, v: int) -> None:
     new_channels: Iterable[Channel] | None
     # First, validate the supplied channel codes/names
     if spec.channels is None:
@@ -342,6 +361,17 @@ def _update(check: Check, spec: Spec, v: int) -> None:
             new_channels.add(matches[0])
 
     update_fields = set()
+    if v == 3 and "parent" in spec.model_fields_set:
+        parent = None
+        if spec.parent:
+            parent = Check.objects.filter(
+                project_id=check.project_id, code=spec.parent
+            ).first()
+            if parent is None:
+                raise ModelValidationError("Parent must belong to the same project.")
+        check.parent = parent
+        check.clean()
+        update_fields.add("parent")
 
     if spec.name is not None:
         check.name = spec.name
@@ -426,11 +456,16 @@ def get_checks(request: ApiRequest) -> JsonResponse:
     if slug := request.GET.get("slug"):
         q = q.filter(slug=slug)
 
+    graph = DependencyGraph(request.project.id) if request.v == 3 else None
     checks = []
     for check in q:
         # precise, final filtering
         if not tags or check.matches_tag_set(tags):
-            checks.append(check.to_dict(readonly=request.readonly, v=request.v))
+            checks.append(
+                check.to_dict(
+                    readonly=request.readonly, v=request.v, dependencies=graph
+                )
+            )
 
     return JsonResponse({"checks": checks})
 
@@ -438,7 +473,14 @@ def get_checks(request: ApiRequest) -> JsonResponse:
 @authorize
 def create_check(request: ApiRequest) -> HttpResponse:
     try:
-        spec = Spec.model_validate(request.json, strict=True)
+        spec = Spec.model_validate(
+            {
+                k: value
+                for k, value in request.json.items()
+                if request.v == 3 or k != "parent"
+            },
+            strict=True,
+        )
     except ValidationError as e:
         return JsonResponse({"error": format_first_error(e)}, status=400)
 
@@ -455,6 +497,8 @@ def create_check(request: ApiRequest) -> HttpResponse:
         _update(check, spec, request.v)
     except BadChannelException as e:
         return JsonResponse({"error": e.message}, status=400)
+    except ModelValidationError as e:
+        return JsonResponse({"error": "; ".join(e.messages)}, status=400)
 
     return JsonResponse(check.to_dict(v=request.v), status=201 if created else 200)
 
@@ -503,7 +547,14 @@ def update_check(request: ApiRequest, code: UUID) -> HttpResponse:
         return HttpResponseForbidden()
 
     try:
-        spec = Spec.model_validate(request.json, strict=True)
+        spec = Spec.model_validate(
+            {
+                k: value
+                for k, value in request.json.items()
+                if request.v == 3 or k != "parent"
+            },
+            strict=True,
+        )
     except ValidationError as e:
         return JsonResponse({"error": format_first_error(e)}, status=400)
 
@@ -511,7 +562,9 @@ def update_check(request: ApiRequest, code: UUID) -> HttpResponse:
         _update(check, spec, request.v)
     except BadChannelException as e:
         return JsonResponse({"error": e.message}, status=400)
-    except Check.NotUpdated:
+    except ModelValidationError as e:
+        return JsonResponse({"error": "; ".join(e.messages)}, status=400)
+    except (Check.NotUpdated, Check.DoesNotExist):
         return HttpResponseNotFound()
 
     return JsonResponse(check.to_dict(v=request.v))
@@ -549,23 +602,26 @@ def pause(request: ApiRequest, code: UUID) -> HttpResponse:
     if check.project_id != request.project.id:
         return HttpResponseForbidden()
 
-    # Return early, without creating a flip object, if the check is already paused
-    if check.status == "paused":
+    with locked_check(check) as check:
+        if check.project_id != request.project.id:
+            return HttpResponseForbidden()
+        # Return early, without creating a flip object, if the check is already paused
+        if check.status == "paused":
+            return JsonResponse(check.to_dict(v=request.v))
+
+        # Track the status change for correct downtime calculation in Check.downtimes()
+        check.create_flip("paused", mark_as_processed=True)
+
+        check.status = "paused"
+        check.last_start = None
+        check.alert_after = None
+        check.save(update_fields=("status", "last_start", "alert_after"))
+
+        # After pausing a check we must check if all checks are up,
+        # and Profile.next_nag_date needs to be cleared out:
+        check.project.update_next_nag_dates()
+
         return JsonResponse(check.to_dict(v=request.v))
-
-    # Track the status change for correct downtime calculation in Check.downtimes()
-    check.create_flip("paused", mark_as_processed=True)
-
-    check.status = "paused"
-    check.last_start = None
-    check.alert_after = None
-    check.save(update_fields=("status", "last_start", "alert_after"))
-
-    # After pausing a check we must check if all checks are up,
-    # and Profile.next_nag_date needs to be cleared out:
-    check.project.update_next_nag_dates()
-
-    return JsonResponse(check.to_dict(v=request.v))
 
 
 @cors("POST")
@@ -576,18 +632,21 @@ def resume(request: ApiRequest, code: UUID) -> HttpResponse:
     if check.project_id != request.project.id:
         return HttpResponseForbidden()
 
-    if check.status != "paused":
-        return HttpResponse("check is not paused", status=409)
+    with locked_check(check) as check:
+        if check.project_id != request.project.id:
+            return HttpResponseForbidden()
+        if check.status != "paused":
+            return HttpResponse("check is not paused", status=409)
 
-    check.create_flip("new", mark_as_processed=True)
+        check.create_flip("new", mark_as_processed=True)
 
-    check.status = "new"
-    check.last_start = None
-    check.last_ping = None
-    check.alert_after = None
-    check.save(update_fields=("status", "last_start", "last_ping", "alert_after"))
+        check.status = "new"
+        check.last_start = None
+        check.last_ping = None
+        check.alert_after = None
+        check.save(update_fields=("status", "last_start", "last_ping", "alert_after"))
 
-    return JsonResponse(check.to_dict(v=request.v))
+        return JsonResponse(check.to_dict(v=request.v))
 
 
 @cors("GET")

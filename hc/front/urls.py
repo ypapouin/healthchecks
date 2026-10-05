@@ -6,6 +6,7 @@ from hc.front import views
 
 # /checks/<code>/
 check_urls = [
+    path("dependencies/", views.dependencies, name="hc-dependencies"),
     path("name/", views.update_name, name="hc-update-name"),
     path("details/", views.details, name="hc-details"),
     path("filtering_rules/", views.filtering_rules, name="hc-filtering-rules"),

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import email
+import hashlib
+import json
 import logging
 import os
 import re
@@ -20,6 +22,7 @@ from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
+from django.db import transaction
 from django.db.models import BinaryField, Case, Count, F, Q, When
 from django.db.models.functions import Substr
 from django.http import (
@@ -41,6 +44,12 @@ from oncalendar import OnCalendar, OnCalendarError
 
 from hc.accounts.http import AuthenticatedHttpRequest
 from hc.accounts.models import Member, Profile, Project
+from hc.api.dependencies import (
+    DependencyGraph,
+    lock_projects,
+    locked_check,
+    set_dependencies,
+)
 from hc.api.models import (
     DEFAULT_GRACE,
     DEFAULT_TIMEOUT,
@@ -216,6 +225,8 @@ def _get_referer_qs(request: HttpRequest) -> str:
 def _status_match(check: Check, statuses: set[str]) -> bool:
     if "started" in statuses and check.last_start:
         return True
+    if "pending" in statuses and check.dependency_info["pending"]:
+        return True
     return check.cached_status in statuses
 
 
@@ -239,6 +250,9 @@ def checks(request: AuthenticatedHttpRequest, code: UUID) -> HttpResponse:
     q = q.select_related("project")
     checks = list(q.prefetch_related("channel_set"))
     sortchecks(checks, request.profile.sort)
+    graph = DependencyGraph(project.id, checks)
+    for check in checks:
+        check.dependency_info = graph.describe(check)
 
     tags_counts, num_down = _tags_counts(checks)
     tags_counts.sort(key=lambda item: item[0].lower())
@@ -293,6 +307,7 @@ def checks(request: AuthenticatedHttpRequest, code: UUID) -> HttpResponse:
         "checks": checks,
         "channels": channels,
         "num_down": num_down,
+        "num_pending": sum(c.dependency_info["pending"] for c in checks),
         "tags": tags_counts,
         "ping_endpoint": settings.PING_ENDPOINT,
         "common_timezones": _common_timezones(checks),
@@ -320,6 +335,7 @@ def status(request: HttpRequest, code: UUID) -> HttpResponse:
     project, _rw = _get_project_for_user(request, code)
     checks = list(Check.objects.filter(project=project))
 
+    graph = DependencyGraph(project.id, checks)
     details = []
     for check in checks:
         ctx = {"check": check}
@@ -328,6 +344,7 @@ def status(request: HttpRequest, code: UUID) -> HttpResponse:
                 "code": str(check.code),
                 "status": check.get_status(),
                 "last_ping": LAST_PING_TMPL.render(ctx).strip(),
+                "dependency": graph.describe(check),
                 "started": check.last_start is not None,
             }
         )
@@ -535,22 +552,43 @@ def add_check(request: AuthenticatedHttpRequest, code: UUID) -> HttpResponse:
     if not form.is_valid():
         return HttpResponseBadRequest()
 
-    check = Check(project=project)
-    check.name = form.cleaned_data["name"]
-    check.slug = form.cleaned_data["slug"]
-    check.tags = form.cleaned_data["tags"]
-    check.kind = form.cleaned_data["kind"]
-    check.timeout = form.cleaned_data["timeout"]
-    check.schedule = form.cleaned_data["schedule"]
-    check.tz = form.cleaned_data["tz"]
-    check.grace = form.cleaned_data["grace"]
-    check.save()
+    with transaction.atomic():
+        lock_projects(project.id)
+        check = Check(project=project)
+        if parent_code := request.POST.get("parent"):
+            try:
+                check.parent = Check.objects.get(project=project, code=parent_code)
+            except (Check.DoesNotExist, ValidationError):
+                return HttpResponseBadRequest("Parent must belong to the same project.")
+        check.name = form.cleaned_data["name"]
+        check.slug = form.cleaned_data["slug"]
+        check.tags = form.cleaned_data["tags"]
+        check.kind = form.cleaned_data["kind"]
+        check.timeout = form.cleaned_data["timeout"]
+        check.schedule = form.cleaned_data["schedule"]
+        check.tz = form.cleaned_data["tz"]
+        check.grace = form.cleaned_data["grace"]
+        check.save()
 
-    check.assign_all_channels()
+        check.assign_all_channels()
 
     url = reverse("hc-checks", args=[project.code])
     url += _get_referer_qs(request)  # Preserve selected tags and search
     return redirect(url)
+
+
+@require_POST
+@login_required
+def dependencies(request: AuthenticatedHttpRequest, code: UUID) -> HttpResponse:
+    check = _get_rw_check_for_user(request, code)
+    try:
+        if request.POST.get("operation") == "children":
+            set_dependencies(check, children=request.POST.getlist("children"))
+        else:
+            set_dependencies(check, parent=request.POST.get("parent") or None)
+    except ValidationError as exc:
+        return HttpResponseBadRequest("; ".join(exc.messages))
+    return redirect("hc-details", code)
 
 
 @require_POST
@@ -605,71 +643,69 @@ def filtering_rules(request: AuthenticatedHttpRequest, code: UUID) -> HttpRespon
 @login_required
 def update_timeout(request: AuthenticatedHttpRequest, code: UUID) -> HttpResponse:
     check = _get_rw_check_for_user(request, code)
-    fields = ("kind", "timeout", "grace", "schedule", "tz", "alert_after")
+    expected_project_id = check.project_id
+    with locked_check(check) as check:
+        if check.project_id != expected_project_id:
+            raise PermissionDenied
+        fields = ("kind", "timeout", "grace", "schedule", "tz", "alert_after")
 
-    kind = request.POST.get("kind")
-    if kind == "simple":
-        simple_form = forms.TimeoutForm(request.POST)
-        if not simple_form.is_valid():
-            return HttpResponseBadRequest()
+        kind = request.POST.get("kind")
+        if kind == "simple":
+            simple_form = forms.TimeoutForm(request.POST)
+            if not simple_form.is_valid():
+                return HttpResponseBadRequest()
 
-        check.kind = "simple"
-        check.timeout = simple_form.cleaned_data["timeout"]
-        check.grace = simple_form.cleaned_data["grace"]
-    elif kind == "cron":
-        cron_form = forms.CronForm(request.POST)
-        if not cron_form.is_valid():
-            return HttpResponseBadRequest()
+            check.kind = "simple"
+            check.timeout = simple_form.cleaned_data["timeout"]
+            check.grace = simple_form.cleaned_data["grace"]
+        elif kind == "cron":
+            cron_form = forms.CronForm(request.POST)
+            if not cron_form.is_valid():
+                return HttpResponseBadRequest()
 
-        check.kind = "cron"
-        check.schedule = cron_form.cleaned_data["schedule"]
-        check.tz = cron_form.cleaned_data["tz"]
-        check.grace = cron_form.cleaned_data["grace"]
-    elif kind == "oncalendar":
-        oncalendar_form = forms.OnCalendarForm(request.POST)
-        if not oncalendar_form.is_valid():
-            return HttpResponseBadRequest()
+            check.kind = "cron"
+            check.schedule = cron_form.cleaned_data["schedule"]
+            check.tz = cron_form.cleaned_data["tz"]
+            check.grace = cron_form.cleaned_data["grace"]
+        elif kind == "oncalendar":
+            oncalendar_form = forms.OnCalendarForm(request.POST)
+            if not oncalendar_form.is_valid():
+                return HttpResponseBadRequest()
 
-        check.kind = "oncalendar"
-        check.schedule = oncalendar_form.cleaned_data["schedule"]
-        check.tz = oncalendar_form.cleaned_data["tz"]
-        check.grace = oncalendar_form.cleaned_data["grace"]
+            check.kind = "oncalendar"
+            check.schedule = oncalendar_form.cleaned_data["schedule"]
+            check.tz = oncalendar_form.cleaned_data["tz"]
+            check.grace = oncalendar_form.cleaned_data["grace"]
 
-    check.alert_after = check.going_down_after()
-    check_saved = False
-    if check.status == "up":
-        assert check.alert_after
-        if check.alert_after < now():
-            # Checks can flip from "up" to "down" state as a result of changing check's
-            # schedule.  We don't want to send notifications when changing schedule
-            # interactively in the web UI. So we update the `alert_after` and `status`
-            # fields, and create a Flip object here the same way as `sendalerts` would
-            # do, but without sending an actual alert.
-            #
-            # We need to create the Flip object because otherwise the calculation
-            # in Check.downtimes() will come out wrong (when this check later comes up,
-            # we will have no record of when it went down).
-            check.create_flip("down", mark_as_processed=True)
+        check.alert_after = check.going_down_after()
+        check_saved = False
+        if check.status == "up":
+            assert check.alert_after
+            if check.alert_after < now():
+                # A schedule edit can make an Up check Down. Record the real
+                # transition for downtime statistics, without sending an alert
+                # for this interactive edit.
+                check.create_flip("down", mark_as_processed=True)
 
-            check.alert_after = None
-            check.status = "down"
+                check.alert_after = None
+                check.status = "down"
 
-            # Kick off nags. This would normally happen in the sendalerts management
-            # command while processing a flip, but we have already marked the flip
-            # as processed
-            check.save(update_fields=fields + ("status",))
-            check_saved = True
-            check.project.update_next_nag_dates()
+                # Kick off nags. This would normally happen in the sendalerts management
+                # command while processing a flip, but we have already marked the flip
+                # as processed
+                check.save(update_fields=fields + ("status",))
+                check_saved = True
+                check.project.update_next_nag_dates()
 
-    if not check_saved:
-        check.save(update_fields=fields)
+        if not check_saved:
+            check.save(update_fields=fields)
 
-    if "/details/" in request.headers.get("Referer", ""):
-        return redirect("hc-details", code)
+        if "/details/" in request.headers.get("Referer", ""):
+            return redirect("hc-details", code)
 
-    url = reverse("hc-checks", args=[check.project.code])
-    url += _get_referer_qs(request)  # Preserve selected tags and search
-    return redirect(url)
+        url = reverse("hc-checks", args=[check.project.code])
+        url += _get_referer_qs(request)  # Preserve selected tags and search
+        return redirect(url)
 
 
 @require_POST
@@ -824,45 +860,53 @@ def ping_body(request: AuthenticatedHttpRequest, code: UUID, n: int) -> HttpResp
 def pause(request: AuthenticatedHttpRequest, code: UUID) -> HttpResponse:
     check = _get_rw_check_for_user(request, code)
 
-    # Return early, without creating a flip object, if the check is already paused
-    if check.status == "paused":
+    expected_project_id = check.project_id
+    with locked_check(check) as check:
+        if check.project_id != expected_project_id:
+            raise PermissionDenied
+        # Return early, without creating a flip object, if the check is already paused
+        if check.status == "paused":
+            return redirect("hc-details", code)
+
+        # Track the status change for correct downtime calculation in Check.downtimes()
+        check.create_flip("paused", mark_as_processed=True)
+
+        check.status = "paused"
+        check.last_start = None
+        check.alert_after = None
+        check.save(update_fields=("status", "last_start", "alert_after"))
+
+        # After pausing a check we must check if all checks are up,
+        # and Profile.next_nag_date needs to be cleared out:
+        check.project.update_next_nag_dates()
+
+        # Don't redirect after an AJAX request:
+        if request.headers.get("X-Requested-With") == "XMLHttpRequest":
+            return HttpResponse()
+
         return redirect("hc-details", code)
-
-    # Track the status change for correct downtime calculation in Check.downtimes()
-    check.create_flip("paused", mark_as_processed=True)
-
-    check.status = "paused"
-    check.last_start = None
-    check.alert_after = None
-    check.save(update_fields=("status", "last_start", "alert_after"))
-
-    # After pausing a check we must check if all checks are up,
-    # and Profile.next_nag_date needs to be cleared out:
-    check.project.update_next_nag_dates()
-
-    # Don't redirect after an AJAX request:
-    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
-        return HttpResponse()
-
-    return redirect("hc-details", code)
 
 
 @require_POST
 @login_required
 def resume(request: AuthenticatedHttpRequest, code: UUID) -> HttpResponse:
     check = _get_rw_check_for_user(request, code)
-    if check.status != "paused":
-        return HttpResponseBadRequest()
+    expected_project_id = check.project_id
+    with locked_check(check) as check:
+        if check.project_id != expected_project_id:
+            raise PermissionDenied
+        if check.status != "paused":
+            return HttpResponseBadRequest()
 
-    check.create_flip("new", mark_as_processed=True)
+        check.create_flip("new", mark_as_processed=True)
 
-    check.status = "new"
-    check.last_start = None
-    check.last_ping = None
-    check.alert_after = None
-    check.save(update_fields=("status", "last_start", "last_ping", "alert_after"))
+        check.status = "new"
+        check.last_start = None
+        check.last_ping = None
+        check.alert_after = None
+        check.save(update_fields=("status", "last_start", "last_ping", "alert_after"))
 
-    return redirect("hc-details", code)
+        return redirect("hc-details", code)
 
 
 @require_POST
@@ -880,28 +924,36 @@ def remove_check(request: AuthenticatedHttpRequest, code: UUID) -> HttpResponse:
 def clear_events(request: AuthenticatedHttpRequest, code: UUID) -> HttpResponse:
     check = _get_rw_check_for_user(request, code)
 
-    check.status = "new"
-    check.last_ping = None
-    check.last_start = None
-    check.last_duration = None
-    check.has_confirmation_link = False
-    check.alert_after = None
-    check.save(
-        update_fields=(
-            "status",
-            "last_ping",
-            "last_start",
-            "last_duration",
-            "has_confirmation_link",
-            "alert_after",
+    expected_project_id = check.project_id
+    with locked_check(check) as check:
+        if check.project_id != expected_project_id:
+            raise PermissionDenied
+        check.status = "new"
+        check.last_ping = None
+        check.last_success = None
+        check.up_since = None
+        check.last_start = None
+        check.last_duration = None
+        check.has_confirmation_link = False
+        check.alert_after = None
+        check.save(
+            update_fields=(
+                "status",
+                "last_ping",
+                "last_success",
+                "up_since",
+                "last_start",
+                "last_duration",
+                "has_confirmation_link",
+                "alert_after",
+            )
         )
-    )
 
-    check.ping_set.all().delete()
-    check.notification_set.all().delete()
-    check.flip_set.all().delete()
+        check.ping_set.all().delete()
+        check.notification_set.all().delete()
+        check.flip_set.all().delete()
 
-    return redirect("hc-details", code)
+        return redirect("hc-details", code)
 
 
 class PingAnnotations(TypedDict):
@@ -1014,13 +1066,17 @@ def details(request: AuthenticatedHttpRequest, code: UUID) -> HttpResponse:
         channels.append(channel)
 
     all_tags = set()
-    sibling_checks = Check.objects.filter(project=check.project).only("tags", "tz")
+    sibling_checks = list(Check.objects.filter(project=check.project))
+    graph = DependencyGraph(check.project_id, sibling_checks)
+    check.dependency_info = graph.describe(check)
     for sibling in sibling_checks:
         if sibling.tags:
             all_tags.update(sibling.tags.split(" "))
 
     ctx = {
         "page": "details",
+        "dependency_checks": sibling_checks,
+        "children": [c for c in sibling_checks if c.parent_id == check.id],
         "project": check.project,
         "check": check,
         "rw": rw,
@@ -1062,9 +1118,15 @@ def transfer(request: AuthenticatedHttpRequest, code: UUID) -> HttpResponse:
             if target_project.num_checks_available() <= 0:
                 return HttpResponseBadRequest()
 
-        check.project = target_project
-        check.save(update_fields=("project",))
-        check.assign_all_channels()
+        expected_project_id = check.project_id
+        with transaction.atomic():
+            lock_projects(expected_project_id, target_project.id)
+            check.refresh_from_db()
+            if check.project_id != expected_project_id:
+                raise PermissionDenied
+            check.project = target_project
+            check.save(update_fields=("project",))
+            check.assign_all_channels()
 
         messages.success(request, "Check transferred successfully!")
         return redirect("hc-details", code)
@@ -1077,44 +1139,48 @@ def transfer(request: AuthenticatedHttpRequest, code: UUID) -> HttpResponse:
 @login_required
 def copy(request: AuthenticatedHttpRequest, code: UUID) -> HttpResponse:
     check = _get_rw_check_for_user(request, code)
+    expected_project_id = check.project_id
+    with locked_check(check) as check:
+        if check.project_id != expected_project_id:
+            raise PermissionDenied
 
-    if check.project.num_checks_available() <= 0:
-        return HttpResponseBadRequest()
+        if check.project.num_checks_available() <= 0:
+            return HttpResponseBadRequest()
 
-    new_name = check.name + " (copy)"
-    # Make sure we don't exceed the 100 character db field limit:
-    if len(new_name) > 100:
-        new_name = check.name[:90] + "... (copy)"
+        new_name = check.name + " (copy)"
+        # Make sure we don't exceed the 100 character db field limit:
+        if len(new_name) > 100:
+            new_name = check.name[:90] + "... (copy)"
 
-    new_slug = check.slug + "-copy"
-    if len(new_slug) > 100:
-        new_slug = ""
+        new_slug = check.slug + "-copy"
+        if len(new_slug) > 100:
+            new_slug = ""
 
-    copied = Check(project=check.project)
-    copied.name = new_name
-    copied.slug = new_slug
-    copied.desc, copied.tags = check.desc, check.tags
+        copied = Check(project=check.project, parent=check.parent)
+        copied.name = new_name
+        copied.slug = new_slug
+        copied.desc, copied.tags = check.desc, check.tags
 
-    copied.filter_subject = check.filter_subject
-    copied.filter_body = check.filter_body
-    copied.filter_http_body = check.filter_http_body
-    copied.filter_default_fail = check.filter_default_fail
-    copied.start_kw = check.start_kw
-    copied.success_kw = check.success_kw
-    copied.failure_kw = check.failure_kw
+        copied.filter_subject = check.filter_subject
+        copied.filter_body = check.filter_body
+        copied.filter_http_body = check.filter_http_body
+        copied.filter_default_fail = check.filter_default_fail
+        copied.start_kw = check.start_kw
+        copied.success_kw = check.success_kw
+        copied.failure_kw = check.failure_kw
 
-    copied.methods = check.methods
-    copied.manual_resume = check.manual_resume
+        copied.methods = check.methods
+        copied.manual_resume = check.manual_resume
 
-    copied.kind = check.kind
-    copied.timeout, copied.grace = check.timeout, check.grace
-    copied.schedule, copied.tz = check.schedule, check.tz
-    copied.save()
+        copied.kind = check.kind
+        copied.timeout, copied.grace = check.timeout, check.grace
+        copied.schedule, copied.tz = check.schedule, check.tz
+        copied.save()
 
-    copied.channel_set.add(*check.channel_set.all())
+        copied.channel_set.add(*check.channel_set.all())
 
-    url = reverse("hc-details", args=[copied.code], query={"copied": 1})
-    return redirect(url)
+        url = reverse("hc-details", args=[copied.code], query={"copied": 1})
+        return redirect(url)
 
 
 def status_single(request: HttpRequest, code: UUID) -> HttpResponse:
@@ -1125,13 +1191,20 @@ def status_single(request: HttpRequest, code: UUID) -> HttpResponse:
     request = cast(AuthenticatedHttpRequest, request)
     check, rw = _get_check_for_user(request, code, preload_owner_profile=True)
 
+    dependency = DependencyGraph(check.project_id).describe(check)
     status = check.get_status()
     events = _get_events(check, 30, start=check.created, end=now())
     updated = "1"
     if len(events):
         updated = str(events[0].created.timestamp())
 
+    # Include notification changes even when no new ping or health transition exists.
+    dependency_updated = hashlib.sha256(
+        json.dumps(dependency, sort_keys=True).encode()
+    ).hexdigest()
     doc = {
+        "dependency": dependency,
+        "dependency_updated": dependency_updated,
         "status": status,
         "status_text": STATUS_TEXT_TMPL.render({"check": check, "rw": rw}),
         "title": down_title(check),
@@ -1139,7 +1212,9 @@ def status_single(request: HttpRequest, code: UUID) -> HttpResponse:
         "started": check.last_start is not None,
     }
 
-    if updated != request.GET.get("u"):
+    if updated != request.GET.get("u") or (
+        request.GET.get("d") is not None and dependency_updated != request.GET["d"]
+    ):
         doc["events"] = EVENTS_TMPL.render({"check": check, "events": events})
         downtimes = check.downtimes(3, request.profile.tz)
         doc["downtimes"] = DOWNTIMES_TMPL.render(

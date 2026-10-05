@@ -86,7 +86,88 @@ $(function () {
         },
     });
 
+    var table = document.getElementById("checks-table");
+    var rows = Array.from(document.querySelectorAll("tr.checks-row"));
+    var viewKey = "checks-view-" + (table ? table.dataset.project : "");
+    var view = "list";
+    var collapsed = new Set();
+    try { view = localStorage.getItem(viewKey) || "list"; } catch (e) {}
+    rows.forEach((row, i) => row.dataset.rank = i);
+
+    function applyHierarchy(filtered) {
+        var byId = new Map(rows.map(row => [row.id, row]));
+        var children = new Map();
+        var visible = new Set(rows.filter(row => row.style.display !== "none").map(row => row.id));
+        rows.forEach(function (row) {
+            var parent = byId.has(row.dataset.parent) ? row.dataset.parent : "";
+            if (!children.has(parent)) children.set(parent, []);
+            children.get(parent).push(row);
+            row.classList.remove("dependency-context");
+        });
+        children.forEach(list => list.sort((a, b) => +a.dataset.rank - +b.dataset.rank));
+        if (view === "hierarchy" && filtered) {
+            Array.from(visible).forEach(function (id) {
+                var seen = new Set();
+                var row = byId.get(id);
+                while (row && byId.has(row.dataset.parent) && !seen.has(row.dataset.parent)) {
+                    seen.add(row.dataset.parent);
+                    row = byId.get(row.dataset.parent);
+                    if (!visible.has(row.id)) row.classList.add("dependency-context");
+                    visible.add(row.id);
+                }
+            });
+        }
+        var ordered = [];
+        if (view === "hierarchy") {
+            var stack = (children.get("") || []).map(row => [row, 0, false]).reverse();
+            var visited = new Set();
+            while (stack.length) {
+                var [row, depth, hidden] = stack.pop();
+                if (visited.has(row.id)) continue;
+                visited.add(row.id);
+                ordered.push(row);
+                row.querySelector(".check-name-cell").style.paddingLeft = (8 + depth * 24) + "px";
+                row.style.display = visible.has(row.id) && !hidden ? "" : "none";
+                var branch = children.get(row.id) || [];
+                var toggle = row.querySelector(".dependency-toggle");
+                toggle.hidden = branch.length === 0;
+                var closed = !filtered && collapsed.has(row.id);
+                toggle.setAttribute("aria-expanded", String(!closed));
+                toggle.textContent = closed ? "▸" : "▾";
+                for (var i = branch.length - 1; i >= 0; i--) stack.push([branch[i], depth + 1, hidden || closed]);
+            }
+        } else {
+            ordered = rows.slice().sort((a, b) => +a.dataset.rank - +b.dataset.rank);
+            rows.forEach(function (row) {
+                row.querySelector(".check-name-cell").style.paddingLeft = "";
+                row.querySelector(".dependency-toggle").hidden = true;
+            });
+        }
+        if (table) {
+            ordered.forEach(row => row.parentNode.appendChild(row));
+            table.classList.toggle("hierarchy", view === "hierarchy");
+        }
+        $("#check-view button").each(function () {
+            var active = this.dataset.view === view;
+            $(this).toggleClass("active", active).attr("aria-pressed", String(active));
+        });
+        return rows.filter(row => row.style.display !== "none").length;
+    }
+
+    $("#check-view button").click(function () {
+        view = this.dataset.view;
+        try { localStorage.setItem(viewKey, view); } catch (e) {}
+        applyFilters();
+    });
+    $(".dependency-toggle").click(function (event) {
+        event.stopPropagation();
+        var id = this.closest("tr").id;
+        if (collapsed.has(id)) collapsed.delete(id); else collapsed.add(id);
+        applyFilters();
+    });
+
     function statusMatch(el, statuses) {
+        if (statuses.includes("pending") && el.dataset.pending === "true") return true;
         var statusClassList = el.querySelector(".status").classList;
         // Go through currently active status filters, and, for each,
         // check if the current check matches
@@ -116,7 +197,7 @@ $(function () {
         });
 
         // Search string
-        var search = $("#search").val().toLowerCase();
+        var search = ($("#search").val() || "").toLowerCase();
         if (search) {
             url.searchParams.append("search", search);
         }
@@ -181,9 +262,12 @@ $(function () {
             $("#checks-table tr.checks-row").each(applySingle);
         }
 
+        numVisible = applyHierarchy(checked.length > 0 || !!search || statuses.length > 0);
         $("#checks-table").toggle(numVisible > 0);
         $("#no-checks").toggle(numVisible == 0);
     }
+
+    applyFilters();
 
     // User clicks on tags: apply filters
     $("#my-checks-tags div").click(function () {
@@ -286,7 +370,16 @@ $(function () {
             timeout: 2000,
             success: function (data) {
                 var statusChanged = false;
+                var pendingCount = 0;
                 for (var i = 0, el; (el = data.details[i]); i++) {
+                    var row = document.getElementById(el.code);
+                    if (el.dependency && row) {
+                        row.dataset.parent = el.dependency.parent ? el.dependency.parent.id : "";
+                        row.dataset.pending = String(el.dependency.pending);
+                        row.querySelector(".dependency-parent").textContent = el.dependency.parent ? "Parent: " + el.dependency.parent.name : "";
+                        updateDependencyStatus(row.querySelector(".dependency-status"), el.dependency);
+                        if (el.dependency.pending) pendingCount++;
+                    }
                     if (lastStatus[el.code] != el.status) {
                         lastStatus[el.code] = el.status;
                         $("#" + el.code + " span.status").attr(
@@ -310,6 +403,9 @@ $(function () {
                         $("#" + el.code + " .last-ping").html(el.last_ping);
                     }
                 }
+
+                $("#pending-count").text(pendingCount);
+                applyFilters();
 
                 // If there were status updates and we have active status filters
                 // then we need to reapply filters now:

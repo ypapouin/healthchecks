@@ -208,3 +208,40 @@ Get the [source code](https://github.com/healthchecks/healthchecks).
 
 See [Configuration](../self_hosted_configuration/) for a list of configuration options.
 
+
+## Upgrading to Check Dependencies {#check-dependencies}
+
+The dependency migration is additive. Existing checks start without a parent.
+`last_success` is deliberately left empty until the next accepted success ping;
+it is not inferred from historical pings. Processed notifications are not replayed.
+
+Apply migrations, then restart the web processes and **all** `sendalerts` workers
+before configuring dependencies:
+
+    ./manage.py migrate
+
+Waiting incidents and recovery deadlines are stored in the database and survive
+worker restarts. Due notifications are evaluated in bounded batches; idle waits
+are polled every ten seconds and relevant pings or hierarchy edits make them due
+sooner. The normal worker loop adds up to about two seconds of polling latency.
+Network calls happen outside database transactions. As before, delivery is
+reserved before calling integrations: a crash after reservation can lose a
+notification, and a reservation does not mean an integration accepted it.
+
+All application paths acquire project locks before changing the dependency graph
+or claiming an alert. This favors consistent decisions across workers, at the
+cost of serializing concurrent pings and edits within one project. PostgreSQL
+provides row locking; SQLite serializes writers. Direct SQL or queryset updates
+that bypass these application paths must not be used to edit dependencies.
+
+With StatsD configured, monitor these cumulative counters:
+
+- `hc.dependencies.deferred`: timeout notifications entering parent wait.
+- `hc.dependencies.released`: deferred notifications released after recovery grace
+  or an explicit failure signal.
+- `hc.dependencies.cancelled`: pending timeout notifications cancelled by recovery
+  or pausing the child.
+
+The **Pending alerts** filter provides the current pending count per project.
+Availability reports continue to include actual downtime during notification
+suspension.

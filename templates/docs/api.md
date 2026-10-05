@@ -1563,3 +1563,39 @@ external uptime monitoring system.
 
 500 Internal Server Error
 :   Test database query did not succeed.
+
+## Dependencies {#dependencies}
+
+API v3 accepts `parent` in both create and update requests:
+
+```json
+{"parent": "11111111-1111-1111-1111-111111111111"}
+```
+
+Use `null` to detach. On update, omitting `parent` keeps the existing parent.
+The UUID must identify a check in the same project. Self references and cycles
+return HTTP 400 without applying any part of the request. API v1/v2 retain their
+existing contracts and do not configure dependencies.
+
+V3 check responses additionally include:
+
+Field | Meaning
+------|--------
+`parent` | Parent UUID, or `null`. For read-only keys, the parent's `unique_key` replaces the UUID.
+`last_success` | ISO 8601 timestamp of the last accepted success, or `null`.
+`dependency.state` | `none`, `ready`, `waiting`, `resuming`, `claimed`, or `cancelled` for the current Down incident.
+`dependency.parent` | Parent reference with `id`, `name`, `status`, and `last_success`, or `null`.
+`dependency.ancestors` | Ancestor references from root to immediate parent, including paused ancestors for context.
+`dependency.blockers` | Ineligible non-paused ancestor references, each including a human-readable `reason`.
+`dependency.notification_after` | Recovery grace deadline in ISO 8601 format, or `null`.
+`dependency.pending` | Whether the incident is waiting for ancestors or in recovery grace.
+
+All dependency reference IDs use masked unique keys with read-only API keys.
+Paused ancestors are ignored for timeout alerts and reminders, including their
+last-success requirement. Traversal continues through them to the grandparents
+and higher ancestors; the structural `parent` and `ancestors` references remain.
+The existing `status` values describe actual health, including Down during
+notification suspension. `claimed` means the worker reserved delivery; it does
+not guarantee that every integration accepted the notification. See
+[Check Dependencies](../configuring_checks/#check-dependencies) for timing,
+explicit failure, recovery, and lifecycle rules.

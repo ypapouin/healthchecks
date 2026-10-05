@@ -148,6 +148,9 @@ class CheckDict(TypedDict):
     timeout: NotRequired[int]
     schedule: NotRequired[str]
     tz: NotRequired[str]
+    parent: NotRequired[str | None]
+    dependency: NotRequired[dict[str, Any]]
+    last_success: NotRequired[str | None]
 
 
 @dataclass
@@ -196,6 +199,9 @@ class Check(models.Model):
     code = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
     desc = models.TextField(blank=True)
     project = models.ForeignKey(Project, models.CASCADE)
+    parent = models.ForeignKey(
+        "self", models.SET_NULL, null=True, blank=True, related_name="children"
+    )
     created = models.DateTimeField(default=now)
     kind = models.CharField(max_length=10, default="simple", choices=CHECK_KINDS)
     timeout = models.DurationField(default=DEFAULT_TIMEOUT)
@@ -215,6 +221,8 @@ class Check(models.Model):
 
     n_pings = models.IntegerField(default=0)
     last_ping = models.DateTimeField(null=True, blank=True)
+    last_success = models.DateTimeField(null=True, blank=True, editable=False)
+    up_since = models.DateTimeField(null=True, blank=True, editable=False)
     last_start = models.DateTimeField(null=True, blank=True)
     last_start_rid = models.UUIDField(null=True)
     last_duration = models.DurationField(null=True, blank=True)
@@ -224,6 +232,7 @@ class Check(models.Model):
 
     # Used to pass downtime data to report templates. Not persisted to db.
     past_downtimes: list[DowntimeRecord] | None = None
+    dependency_info: dict[str, Any] = {}
 
     class Meta:
         indexes = (
@@ -239,6 +248,120 @@ class Check(models.Model):
 
     def __str__(self) -> str:
         return "%s (%d)" % (self.name or self.code, self.id)
+
+    def clean(self) -> None:
+        super().clean()
+        from hc.api.dependencies import validate_graph
+
+        if (
+            self.pk
+            and Check.objects.filter(pk=self.pk)
+            .exclude(project_id=self.project_id)
+            .exists()
+        ):
+            self.parent_id = None
+        checks = {c.id: c for c in Check.objects.filter(project_id=self.project_id)}
+        checks[self.pk or 0] = self
+        validate_graph(checks, {pk: c.parent_id for pk, c in checks.items()})
+
+    def save(self, *args: Any, **kwargs: Any) -> None:
+        from hc.api.dependencies import cancel_pending, lock_projects, wake_pending
+
+        while True:
+            with transaction.atomic():
+                old_project = None
+                if self.pk:
+                    old_project = (
+                        Check.objects.filter(pk=self.pk)
+                        .values_list("project_id", flat=True)
+                        .first()
+                    )
+                lock_projects(
+                    *(p for p in (old_project, self.project_id) if p is not None)
+                )
+                old = Check.objects.filter(pk=self.pk).first() if self.pk else None
+                if old and old.project_id not in (old_project, self.project_id):
+                    continue
+                fields = kwargs.get("update_fields")
+                writes_parent = (
+                    fields is None or "parent" in fields or "parent_id" in fields
+                )
+                writes_project = fields is None or "project" in fields
+                transferred = (
+                    old and writes_project and old.project_id != self.project_id
+                )
+                if transferred and old is not None:
+                    detached = set(
+                        Check.objects.filter(parent_id=self.pk).values_list(
+                            "id", flat=True
+                        )
+                    )
+                    self.parent_id = None
+                    Check.objects.filter(parent_id=self.pk).update(parent=None)
+                    if fields is not None:
+                        kwargs["update_fields"] = set(fields) | {"parent"}
+                    wake_pending(old.project_id, detached)
+                if (
+                    not old
+                    or transferred
+                    or (writes_parent and old.parent_id != self.parent_id)
+                ):
+                    self.clean()
+                changed = (
+                    not old
+                    or transferred
+                    or (writes_parent and old.parent_id != self.parent_id)
+                )
+                state_fields = {
+                    "status",
+                    "last_ping",
+                    "last_start",
+                    "kind",
+                    "timeout",
+                    "grace",
+                    "schedule",
+                    "tz",
+                }
+                if old and (fields is None or state_fields.intersection(fields)):
+                    # Schedule edits and new /start signals can also end or
+                    # begin an Up sequence without an accepted success ping.
+                    try:
+                        was_up = old.get_status() == "up"
+                        is_up = self.get_status() == "up"
+                    except Exception:
+                        # Preserve the worker's existing invalid-schedule
+                        # handling instead of rejecting unrelated saves here.
+                        was_up = is_up = False
+                    if not is_up:
+                        self.up_since = None
+                    elif not was_up and self.up_since == old.up_since:
+                        self.up_since = now()
+                    if fields is not None and self.up_since != old.up_since:
+                        kwargs["update_fields"] = set(kwargs["update_fields"]) | {
+                            "up_since"
+                        }
+                if self.status in ("paused", "new", "down") and (
+                    fields is None or "status" in fields
+                ):
+                    self.up_since = None
+                    if fields is not None:
+                        kwargs["update_fields"] = set(kwargs["update_fields"]) | {
+                            "up_since"
+                        }
+                super().save(*args, **kwargs)
+                if self.status == "paused" and (fields is None or "status" in fields):
+                    cancel_pending(self)
+                if changed:
+                    wake_pending(self.project_id, {self.pk})
+                elif (
+                    old
+                    and (fields is None or "status" in fields)
+                    and (old.status == "paused") != (self.status == "paused")
+                ):
+                    # Pausing removes this ancestor's requirements; resuming
+                    # restores them. Recheck descendants without resetting grace.
+                    wake_pending(self.project_id)
+            return
 
     def name_then_code(self) -> str:
         if self.name:
@@ -397,14 +520,24 @@ class Check(models.Model):
         throwaway_uuid = uuid.uuid4()
         q = Check.objects.filter(id=self.id)
 
-        # Rename so it cannot be pinged any longer
-        q.update(code=throwaway_uuid, slug=str(throwaway_uuid))
+        from hc.api.dependencies import locked_check, wake_pending
 
         try:
-            q.delete()
-        except IntegrityError:
-            # Retry once
-            q.delete()
+            with locked_check(self) as current:
+                # Authorization was checked against this instance's project.
+                # A concurrent transfer must not turn deletion into a write to
+                # a project the requester may no longer have access to.
+                if current.project_id != self.project_id:
+                    return
+                detached = set(
+                    Check.objects.filter(parent_id=self.pk).values_list("id", flat=True)
+                )
+                # Rename so it cannot be pinged any longer
+                q.update(code=throwaway_uuid, slug=str(throwaway_uuid))
+                q.delete()
+                wake_pending(current.project_id, detached)
+        except Check.DoesNotExist:
+            pass
 
     def assign_all_channels(self) -> None:
         channels = Channel.objects.filter(project=self.project)
@@ -436,7 +569,9 @@ class Check(models.Model):
     def filter_any(self) -> bool:
         return self.filter_subject or self.filter_body or self.filter_http_body
 
-    def to_dict(self, *, readonly: bool = False, v: int = 3) -> CheckDict:
+    def to_dict(
+        self, *, readonly: bool = False, v: int = 3, dependencies: Any = None
+    ) -> CheckDict:
         with_started = v == 1
         result: CheckDict = {
             "name": self.name,
@@ -488,6 +623,17 @@ class Check(models.Model):
             result["schedule"] = self.schedule
             result["tz"] = self.tz
 
+        if v == 3:
+            from hc.api.dependencies import DependencyGraph
+
+            graph = dependencies or DependencyGraph(self.project_id)
+            dependency = graph.describe(self, readonly=readonly)
+            result["parent"] = (
+                dependency["parent"]["id"] if dependency["parent"] else None
+            )
+            result["dependency"] = dependency
+            result["last_success"] = isostring(self.last_success)
+
         return result
 
     def ping(
@@ -505,11 +651,13 @@ class Check(models.Model):
         # There's a possible race condition where the "sendalerts" command sees
         # the updated Check object before the Ping object is created.
         # To avoid this, put both operations inside a transaction:
-        with transaction.atomic():
+        from hc.api.dependencies import locked_check, wake_pending
+
+        with locked_check(self) as self:
             # Acquire a lock. Without locking, on MariaDB, concurrent pings can
             # lead to a deadlock
-            self = Check.objects.select_for_update().get(id=self.id)
             frozen_now = now()
+            was_up = self.get_status() == "up"
 
             if self.status == "paused" and self.manual_resume:
                 action = "ign"
@@ -519,6 +667,32 @@ class Check(models.Model):
                 self.last_start_rid = rid
                 # Don't update "last_ping" field.
             elif action in ("success", "fail"):
+                if action == "success":
+                    self.last_success = frozen_now
+                    if not was_up or self.up_since is None:
+                        self.up_since = frozen_now
+                else:
+                    self.up_since = None
+                    # Release this incident's notification while preserving
+                    # the historical timeout reason.
+                    from hc.lib.statsd import statsd
+
+                    deferred = self.flip_set.filter(
+                        processed=None, notification_state__in=("waiting", "resuming")
+                    ).count()
+                    if deferred:
+                        statsd.incr("hc.dependencies.released", deferred)
+                    self.flip_set.filter(
+                        new_status="down",
+                        reason="timeout",
+                        processed=None,
+                        notification_state__in=("ready", "waiting", "resuming"),
+                    ).update(
+                        notification_reason="fail",
+                        notification_state="ready",
+                        next_evaluation=frozen_now,
+                        resume_after=None,
+                    )
                 self.last_ping = frozen_now
                 self.last_duration = None
                 if self.last_start:
@@ -538,11 +712,19 @@ class Check(models.Model):
                     self.create_flip(new_status, reason=reason)
                     self.status = new_status
 
+            if self.get_status() != "up":
+                self.up_since = None
+            elif not was_up or self.up_since is None:
+                self.up_since = frozen_now
+
             self.alert_after = self.going_down_after()
             self.n_pings = models.F("n_pings") + 1
             body_lowercase = body.decode(errors="replace").lower()
             self.has_confirmation_link = "confirm" in body_lowercase
             self.save()
+            # A success or failure may release/block descendants before their next poll.
+            if action in ("success", "fail", "start"):
+                wake_pending(self.project_id)
 
             ping = Ping(owner=self)
             ping.n = self.n_pings
@@ -562,6 +744,11 @@ class Check(models.Model):
             ping.rid = rid
             ping.exitstatus = exitstatus
             ping.save()
+
+        if action == "success" and not was_up:
+            # A parent can recover from Late without a stored status transition.
+            # Resume reminders previously suspended for its descendants as well.
+            self.project.update_next_nag_dates()
 
         # Upload ping body to S3 outside the DB transaction, because this operation
         # can potentially take a long time:
@@ -600,7 +787,18 @@ class Check(models.Model):
             # We could calculate this precisely, but 3*31 is close enough and
             # much simpler.
             flip_threshold = min(ping.created, now() - td(days=93))
-            self.flip_set.filter(created__lt=flip_threshold).delete()
+            old_flips = self.flip_set.filter(created__lt=flip_threshold).exclude(
+                processed=None, reason="timeout"
+            )
+            if self.status == "down":
+                current = (
+                    self.flip_set.filter(new_status="down")
+                    .order_by("-created", "-id")
+                    .first()
+                )
+                if current:
+                    old_flips = old_flips.exclude(pk=current.pk)
+            old_flips.delete()
         except Ping.DoesNotExist:
             pass
 
@@ -664,8 +862,24 @@ class Check(models.Model):
 
         flip = Flip(owner=self)
         flip.created = now()
+        from hc.api.dependencies import cancel_pending
+
+        if new_status in ("up", "paused"):
+            cancelled = cancel_pending(self)
+            previous = (
+                self.flip_set.filter(new_status="down")
+                .order_by("-created", "-id")
+                .first()
+            )
+            if new_status == "up" and (
+                cancelled or (previous and previous.notification_state == "cancelled")
+            ):
+                flip.notification_state = "cancelled"
+                mark_as_processed = True
         if mark_as_processed:
             flip.processed = flip.created
+            if flip.notification_state != "cancelled":
+                flip.notification_state = "claimed"
         flip.old_status = self.status
         flip.new_status = new_status
         flip.reason = reason
@@ -1364,6 +1578,27 @@ class Flip(models.Model):
     old_status = models.CharField(max_length=8, choices=STATUSES)
     new_status = models.CharField(max_length=8, choices=STATUSES)
     reason = models.CharField(max_length=8, choices=REASONS, default="")
+    notification_reason = models.CharField(
+        max_length=8, choices=REASONS, default="", blank=True
+    )
+    notification_state = models.CharField(
+        max_length=10,
+        default="ready",
+        choices=(
+            ("ready", "Ready"),
+            ("waiting", "Waiting for parents"),
+            ("resuming", "Recovery grace"),
+            ("claimed", "Claimed"),
+            ("cancelled", "Cancelled"),
+        ),
+    )
+    grace_start = models.DateTimeField(null=True, blank=True)
+    incident_grace = models.DurationField(null=True, blank=True)
+    next_evaluation = models.DateTimeField(
+        default=now, null=True, blank=True, db_index=True
+    )
+    resume_after = models.DateTimeField(null=True, blank=True)
+    resume_signature = models.JSONField(default=dict, blank=True)
 
     class Meta:
         indexes = (
@@ -1396,6 +1631,8 @@ class Flip(models.Model):
         * Sort channels by last_notify_duration (shorter durations first)
         """
 
+        if self.notification_state == "cancelled":
+            return []
         # Don't send alerts on new->up and paused->up transitions
         if self.new_status == "up" and self.old_status in ("new", "paused"):
             return []
@@ -1408,9 +1645,10 @@ class Flip(models.Model):
         return [ch for ch in q if not ch.transport.is_noop(self.new_status)]
 
     def reason_long(self) -> str | None:
-        if self.reason == "timeout":
+        reason = self.notification_reason or self.reason
+        if reason == "timeout":
             return "success signal did not arrive on time, grace time passed"
-        if self.reason == "fail":
+        if reason == "fail":
             return "received a failure signal"
         return None
 
