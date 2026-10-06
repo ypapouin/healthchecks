@@ -105,6 +105,7 @@ $(function () {
                         li.textContent = b.name + ": " + b.reason + ". Last success: " + (b.last_success || "never") + ".";
                         blockers.appendChild(li);
                     });
+                    document.getElementById("dependency-help").hidden = !data.dependency.parent;
                 }
                 if (data.status_text != lastStatusText) {
                     lastStatusText = data.status_text;

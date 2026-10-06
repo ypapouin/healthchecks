@@ -89,10 +89,60 @@ $(function () {
     var table = document.getElementById("checks-table");
     var rows = Array.from(document.querySelectorAll("tr.checks-row"));
     var viewKey = "checks-view-" + (table ? table.dataset.project : "");
+    var collapsedKey = "checks-collapsed-" + (table ? table.dataset.project : "");
     var view = "list";
     var collapsed = new Set();
     try { view = localStorage.getItem(viewKey) || "list"; } catch (e) {}
+    try {
+        var savedCollapsed = JSON.parse(localStorage.getItem(collapsedKey) || "[]");
+        if (Array.isArray(savedCollapsed)) {
+            var checkIds = new Set(rows.map(row => row.id));
+            collapsed = new Set(savedCollapsed.filter(id => checkIds.has(id)));
+        }
+    } catch (e) {}
     rows.forEach((row, i) => row.dataset.rank = i);
+
+    var treeLines = document.querySelector(".dependency-tree-lines path");
+    var treeFrame;
+    function drawHierarchyLines() {
+        if (!treeLines) return;
+        var segments = [];
+        if (view === "hierarchy" && table.offsetHeight) {
+            var bounds = table.parentNode.getBoundingClientRect();
+            var points = new Map();
+            // Measure actual positions to account for wrapped names, tags and badges.
+            rows.forEach(function (row) {
+                if (row.style.display === "none") return;
+                var toggle = row.querySelector(".dependency-toggle");
+                var rect = toggle.getBoundingClientRect();
+                points.set(row.id, {
+                    x: Math.round(rect.left + rect.width / 2 - bounds.left) + 0.5,
+                    y: Math.round(rect.top + rect.height / 2 - bounds.top) + 0.5,
+                    gap: toggle.hidden ? 0 : 7,
+                    parent: row.dataset.parent,
+                });
+            });
+            var stems = new Map();
+            points.forEach(function (point) {
+                var parent = points.get(point.parent);
+                if (!parent) return;
+                segments.push(`M${parent.x},${point.y}H${point.x - point.gap}`);
+                stems.set(point.parent, Math.max(stems.get(point.parent) || 0, point.y));
+            });
+            stems.forEach(function (bottom, id) {
+                var parent = points.get(id);
+                segments.push(`M${parent.x},${parent.y + 7}V${bottom}`);
+            });
+        }
+        treeLines.setAttribute("d", segments.join(" "));
+    }
+    function scheduleHierarchyLines() {
+        cancelAnimationFrame(treeFrame);
+        treeFrame = requestAnimationFrame(drawHierarchyLines);
+    }
+    if (table) {
+        new ResizeObserver(scheduleHierarchyLines).observe(table);
+    }
 
     function applyHierarchy(filtered) {
         var byId = new Map(rows.map(row => [row.id, row]));
@@ -146,6 +196,7 @@ $(function () {
         if (table) {
             ordered.forEach(row => row.parentNode.appendChild(row));
             table.classList.toggle("hierarchy", view === "hierarchy");
+            scheduleHierarchyLines();
         }
         $("#check-view button").each(function () {
             var active = this.dataset.view === view;
@@ -163,6 +214,7 @@ $(function () {
         event.stopPropagation();
         var id = this.closest("tr").id;
         if (collapsed.has(id)) collapsed.delete(id); else collapsed.add(id);
+        try { localStorage.setItem(collapsedKey, JSON.stringify(Array.from(collapsed))); } catch (e) {}
         applyFilters();
     });
 
@@ -376,7 +428,10 @@ $(function () {
                     if (el.dependency && row) {
                         row.dataset.parent = el.dependency.parent ? el.dependency.parent.id : "";
                         row.dataset.pending = String(el.dependency.pending);
-                        row.querySelector(".dependency-parent").textContent = el.dependency.parent ? "Parent: " + el.dependency.parent.name : "";
+                        var parentInfo = row.querySelector(".dependency-parent");
+                        parentInfo.hidden = !el.dependency.parent;
+                        parentInfo.querySelector(".dependency-parent-name").textContent = el.dependency.parent ? el.dependency.parent.name : "";
+                        parentInfo.querySelector(".dependency-parent-badge").title = el.dependency.parent ? "Parent: " + el.dependency.parent.name : "";
                         updateDependencyStatus(row.querySelector(".dependency-status"), el.dependency);
                         if (el.dependency.pending) pendingCount++;
                     }

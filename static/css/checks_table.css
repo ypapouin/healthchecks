@@ -162,11 +162,71 @@ body.dark #checks-table .integrations span.off {
     text-decoration:  underline;
 }
 
-/* Dependency information remains readable without color or hover. */
-.dependency-status { margin-top: 5px; white-space: normal; }
+/* Notification indicators and dependency hierarchy. */
+.checks-table-container {
+    position: relative;
+}
+.dependency-tree-lines {
+    display: none;
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    fill: none;
+    stroke: var(--text-muted);
+    stroke-width: 1;
+    opacity: 0.5;
+}
+#checks-table.hierarchy + .dependency-tree-lines {
+    display: block;
+}
+#checks-table .check-notification-cell {
+    max-width: 240px;
+    overflow-wrap: anywhere;
+}
+.dependency-status { white-space: normal; }
+#checks-table .dependency-status > [role="img"] {
+    display: inline-block;
+    font-size: 24px;
+    line-height: 1;
+    width: 24px;
+}
 .dependency-status .label { display: inline-block; white-space: normal; text-align: left; line-height: 1.4; }
 .dependency-toggle[hidden] { display: none; }
-.dependency-toggle { float: left; margin-right: 4px; }
+.dependency-toggle {
+    float: left;
+    width: 24px;
+    margin-right: 4px;
+    padding-left: 0;
+    padding-right: 0;
+}
+.hierarchy .dependency-toggle[hidden] {
+    display: block;
+    visibility: hidden;
+}
+.dependency-parent {
+    /* Match the name's 6px padding and 1px border. */
+    margin-left: 7px;
+}
+.dependency-parent-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    max-width: 100%;
+    font-size: 12px;
+    line-height: 1.3;
+    white-space: normal;
+    text-align: left;
+}
+.dependency-parent-icon {
+    width: 1em;
+    height: 1em;
+    flex: 0 0 1em;
+    background-color: currentColor;
+    -webkit-mask: url("../img/parent.svg") center / contain no-repeat;
+    mask: url("../img/parent.svg") center / contain no-repeat;
+}
 .hierarchy .dependency-parent { display: none; }
 .dependency-context .my-checks-name { opacity: 0.7; }
-#check-view { margin: 10px 0; }

@@ -170,7 +170,8 @@ body {
 .status.ic-paused {
     color: var(--status-new-color);
 }
-.status.ic-grace {
+.status.ic-grace,
+.alert-waiting {
     color: #f0ad4e;
 }
 .status.ic-down {
@@ -179,6 +180,30 @@ body {
 /* used in the filters dropdown: */
 .status.ic-dots {
     color: var(--text-muted);
+}
+
+.alert-claimed::before,
+.alert-waiting::before {
+    content: "";
+    display: inline-block;
+    width: 1em;
+    height: 1em;
+    vertical-align: -0.125em;
+    background-color: currentColor;
+}
+
+.alert-claimed::before {
+    -webkit-mask: url("../img/paper-plane.svg") center / contain no-repeat;
+    mask: url("../img/paper-plane.svg") center / contain no-repeat;
+}
+
+.alert-waiting::before {
+    -webkit-mask: url("../img/hourglass.svg") center / contain no-repeat;
+    mask: url("../img/hourglass.svg") center / contain no-repeat;
+}
+
+.alert-resuming.ic-timer {
+    color: #5bc0de;
 }
 
 .label.label-start {

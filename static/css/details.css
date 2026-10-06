@@ -10,8 +10,11 @@
     font-size: 12px;
 }
 
-.details-block .status {
+.details-block .status,
+#dependency-status > [role="img"] {
+    display: inline-block;
     font-size: 32px;
+    line-height: 1;
     width: 40px;
 }
 
@@ -160,4 +163,65 @@ ul.crosses li:before {
 #current-status-content {
     margin-left: 50px;
     padding-top: 6px;
+}
+
+#current-status-dependencies {
+    display: flex;
+    align-items: flex-start;
+    clear: both;
+    margin: 16px 0;
+}
+
+#dependency-status {
+    flex: 0 0 50px;
+    text-align: center;
+}
+
+#dependency-explanation {
+    flex: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+#dependency-blockers {
+    margin: 0;
+    padding-left: 20px;
+}
+
+#dependency-help {
+    margin: 8px 0 0;
+}
+
+#dependency-parent-form {
+    display: block;
+}
+
+#dependency-parent-controls {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+}
+
+.dependency-parent-select {
+    flex: 1;
+    min-width: 0;
+}
+
+.dependency-parent-select .ts-control {
+    min-height: 30px;
+    padding: 5px 10px;
+}
+
+#dependency-parent-save {
+    flex-shrink: 0;
+}
+
+#dependency-parent-save[hidden],
+#dependency-help[hidden] {
+    display: none;
+}
+
+#dependency-children-label {
+    display: block;
+    margin-top: 16px;
 }

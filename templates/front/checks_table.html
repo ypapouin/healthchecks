@@ -1,4 +1,5 @@
 {% load hc_extras static %}
+<div class="checks-table-container">
 <table
     id="checks-table"
     class="table {% if rw %}rw{% endif%}"
@@ -34,6 +35,9 @@
                 <a id="to-slug" href="?urls=slug" {% if project.show_slugs %}class="active"{% endif %}>slug</a>
             </small>
             {% endif %}
+        </th>
+        <th class="th-notifications">
+            <span class="sr-only">Notifications</span>
         </th>
         <th class="th-integrations hidden-xs">Integrations</th>
         <th class="th-period hidden-xs">
@@ -79,8 +83,13 @@
                 <span class="label label-tag">{{ tag }}</span>
                 {% endfor %}
             </div>
-            <div class="dependency-parent checks-subline">{% if check.dependency_info.parent %}Parent: {{ check.dependency_info.parent.name }}{% endif %}</div>
-            <div class="dependency-status" aria-live="polite">{% include "front/dependency_status.html" with dependency=check.dependency_info %}</div>
+            <div class="dependency-parent" {% if not check.dependency_info.parent %}hidden{% endif %}>
+                <span class="label label-tag dependency-parent-badge" title="{% if check.dependency_info.parent %}Parent: {{ check.dependency_info.parent.name }}{% endif %}">
+                    <span class="dependency-parent-icon" aria-hidden="true"></span>
+                    <span class="sr-only">Parent: </span>
+                    <span class="dependency-parent-name">{{ check.dependency_info.parent.name }}</span>
+                </span>
+            </div>
         </td>
         <td class="hidden-xs hidden-sm hidden-md">
             {% if project.show_slugs and not check.slug %}
@@ -91,6 +100,9 @@
                 <small class="text-danger">(not unique)</small>
                 {% endif %}
             {% endif %}
+        </td>
+        <td class="check-notification-cell">
+            <div class="dependency-status" aria-live="polite">{% include "front/dependency_status.html" with dependency=check.dependency_info %}</div>
         </td>
         <td class="hidden-xs">
             {% if channels|length <= 10 %}
@@ -133,6 +145,10 @@
     </tr>
     {% endfor %}
 </table>
+<svg class="dependency-tree-lines" aria-hidden="true" focusable="false">
+    <path></path>
+</svg>
+</div>
 
 {% for channel in channels %}
 <div

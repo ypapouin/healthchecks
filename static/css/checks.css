@@ -1,7 +1,12 @@
 #check-filters {
     display: flex;
+    flex-wrap: wrap;
     gap: 15px;
     align-items: flex-start;
+}
+
+#check-view {
+    flex-shrink: 0;
 }
 
 #my-checks-tags {

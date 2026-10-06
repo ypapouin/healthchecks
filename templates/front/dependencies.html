@@ -1,33 +1,31 @@
 <div id="dependencies" class="details-block">
     <h2>Dependencies</h2>
     <p id="dependency-path">{% for ancestor in check.dependency_info.ancestors %}{{ ancestor.name }} → {% endfor %}{{ check.name|default:"unnamed" }}</p>
-    <div id="dependency-status" aria-live="polite">{% include "front/dependency_status.html" with dependency=check.dependency_info %}</div>
-    <ul id="dependency-blockers">
-        {% for blocker in check.dependency_info.blockers %}<li>{{ blocker.name }}: {{ blocker.reason }}. Last success: {{ blocker.last_success|default:"never" }}.</li>{% endfor %}
-    </ul>
     {% if rw %}
-    <form method="post" action="{% url 'hc-dependencies' check.code %}">
+    <form id="dependency-parent-form" method="post" action="{% url 'hc-dependencies' check.code %}">
         {% csrf_token %}
         <label for="dependency-parent">Parent</label>
-        <select id="dependency-parent" class="dependency-select" name="parent">
-            <option value="">No parent</option>
-            {% for candidate in dependency_checks %}{% if candidate.id != check.id %}
-            <option value="{{ candidate.code }}" {% if candidate.id == check.parent_id %}selected{% endif %}>{{ candidate.name|default:"unnamed" }}</option>
-            {% endif %}{% endfor %}
-        </select>
-        <p class="help-block">Paused ancestors are ignored; their parents are still checked. All other ancestors must be Up and have succeeded since this check's grace period began. Explicit failures alert immediately.</p>
-        <button class="btn btn-default" type="submit">Save parent</button>
+        <div id="dependency-parent-controls">
+            <div class="dependency-parent-select">
+                <select id="dependency-parent" class="form-control input-sm dependency-select" name="parent">
+                    <option value="">No parent</option>
+                    {% for candidate in dependency_checks %}{% if candidate.id != check.id %}
+                    <option value="{{ candidate.code }}" {% if candidate.id == check.parent_id %}selected{% endif %}>{{ candidate.name|default:"unnamed" }}</option>
+                    {% endif %}{% endfor %}
+                </select>
+            </div>
+            <button id="dependency-parent-save" class="btn btn-sm btn-primary" type="submit" hidden>Save parent</button>
+        </div>
     </form>
     {% endif %}
-    <h3>Children</h3>
-    <ul>{% for child in children %}<li><a href="{% url 'hc-details' child.code %}">{{ child.name|default:"unnamed" }}</a></li>{% empty %}<li>No children</li>{% endfor %}</ul>
+    <label id="dependency-children-label"{% if rw %} for="dependency-children"{% endif %}>Children</label>
+    <ul aria-labelledby="dependency-children-label">{% for child in children %}<li><a href="{% url 'hc-details' child.code %}">{{ child.name|default:"unnamed" }}</a></li>{% empty %}<li>No children</li>{% endfor %}</ul>
     {% if rw %}
     <details>
-        <summary class="btn btn-default">Add children / edit selection</summary>
+        <summary class="btn btn-sm btn-default">Add children / edit selection</summary>
         <form method="post" action="{% url 'hc-dependencies' check.code %}">
             {% csrf_token %}
             <input type="hidden" name="operation" value="children">
-            <label for="dependency-children">Children</label>
             <select id="dependency-children" class="dependency-select" name="children" multiple>
                 {% for candidate in dependency_checks %}{% if candidate.id != check.id %}
                 <option value="{{ candidate.code }}" data-parent="{{ candidate.parent_id|default:'' }}" {% if candidate.parent_id == check.id %}selected{% endif %}>{{ candidate.name|default:"unnamed" }}{% if candidate.parent_id and candidate.parent_id != check.id %} — replaces parent: {{ candidate.parent.name|default:"unnamed" }}{% endif %}</option>
@@ -35,7 +33,9 @@
             </select>
             <p class="help-block">The selected checks become direct children. Their previous parents are replaced. Unselected current children are detached.</p>
             <p id="dependency-replacements" role="status"></p>
-            <button class="btn btn-primary" type="submit">Save children</button>
+            <div class="text-right">
+                <button class="btn btn-sm btn-primary" type="submit">Save children</button>
+            </div>
         </form>
     </details>
     {% endif %}

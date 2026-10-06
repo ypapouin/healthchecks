@@ -1,9 +1,13 @@
 {% if dependency.state == "waiting" %}
-<span class="label label-warning">Waiting for {% for blocker in dependency.blockers %}{{ blocker.name }}{% if not forloop.last %}, {% endif %}{% empty %}parent verification{% endfor %}</span>
+<span class="alert-waiting" role="img"
+      aria-label="Waiting for {% for blocker in dependency.blockers %}{{ blocker.name }}{% if not forloop.last %}, {% endif %}{% empty %}parent verification{% endfor %}"
+      title="Waiting for {% for blocker in dependency.blockers %}{{ blocker.name }}{% if not forloop.last %}, {% endif %}{% empty %}parent verification{% endfor %}"></span>
 {% elif dependency.state == "resuming" %}
-<span class="label label-info" data-deadline="{{ dependency.notification_after }}">Recovery grace until {{ dependency.notification_after }}</span>
+<span class="alert-resuming ic-timer" role="img" data-deadline="{{ dependency.notification_after }}"
+      aria-label="Recovery grace until {{ dependency.notification_after }}"
+      title="Recovery grace until {{ dependency.notification_after }}"></span>
 {% elif dependency.state == "claimed" %}
-<span class="checks-subline">Alert claimed for delivery</span>
+<span class="checks-subline alert-claimed" role="img" aria-label="Alert claimed for delivery" title="Alert claimed for delivery"></span>
 {% elif dependency.state == "cancelled" %}
 <span class="checks-subline">Alert cancelled</span>
 {% endif %}

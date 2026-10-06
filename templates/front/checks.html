@@ -60,11 +60,11 @@
 {% endif %}
 
 {% if checks %}
-<div class="btn-group" id="check-view" role="group" aria-label="Check view">
-    <button type="button" class="btn btn-default active" data-view="list" aria-pressed="true">List</button>
-    <button type="button" class="btn btn-default" data-view="hierarchy" aria-pressed="false">Hierarchy</button>
-</div>
 <div id="check-filters">
+    <div class="btn-group" id="check-view" role="group" aria-label="Check view">
+        <button type="button" class="btn btn-default active" data-view="list" aria-pressed="true">List</button>
+        <button type="button" class="btn btn-default" data-view="hierarchy" aria-pressed="false">Hierarchy</button>
+    </div>
     <div id="my-checks-tags">
     {% for tag, status, tooltip in tags %}
         <div data-tooltip="{{ tooltip }}" class="btn btn-xs {{ status }} {% if tag in selected_tags %}checked{% endif%}">{{ tag }}</div>

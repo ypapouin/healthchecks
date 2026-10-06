@@ -129,7 +129,7 @@
             </div>
         </div>
 
-        <div class="details-block">
+        <div id="current-status" class="details-block">
             <h2>Current Status</h2>
             <div id="current-status-indicator">
                 <span id="current-status-icon" class="status ic-{{ check.get_status }}"></span>
@@ -138,6 +138,15 @@
             <div id="current-status-content">
                 <p id="current-status-text">{% include "front/log_status_text.html" %}</p>
                 {% include "front/details_downtimes.html" %}
+            </div>
+            <div id="current-status-dependencies">
+                <div id="dependency-status" aria-live="polite">{% include "front/dependency_status.html" with dependency=check.dependency_info %}</div>
+                <div id="dependency-explanation">
+                    <ul id="dependency-blockers">
+                        {% for blocker in check.dependency_info.blockers %}<li>{{ blocker.name }}: {{ blocker.reason }}. Last success: {{ blocker.last_success|default:"never" }}.</li>{% endfor %}
+                    </ul>
+                    <p id="dependency-help" class="help-block" {% if not check.dependency_info.parent %}hidden{% endif %}>Paused ancestors are ignored; their parents are still checked. All other ancestors must be Up and have succeeded since this check's grace period began. Explicit failures alert immediately.</p>
+                </div>
             </div>
             <div class="text-right">
                 {% if rw %}
