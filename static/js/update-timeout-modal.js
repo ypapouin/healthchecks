@@ -23,26 +23,19 @@ $(function () {
         $("#update-oncalendar-form").attr("action", url);
 
         // Simple, period
-        var parsed = secsToUnits(this.dataset.timeout);
-        period.value = parsed.value;
-        periodUnit.value = parsed.unit;
+        setPeriod(this.dataset.timeout);
         periodSlider.noUiSlider.set(this.dataset.timeout);
-        $("#update-timeout-timeout").val(this.dataset.timeout);
 
         // Simple, grace
-        var parsed = secsToUnits(this.dataset.grace);
-        grace.value = parsed.value;
-        graceUnit.value = parsed.unit;
+        setGrace(this.dataset.grace);
         graceSlider.noUiSlider.set(this.dataset.grace);
-        $("#update-timeout-grace").val(this.dataset.grace);
 
         // Cron
         cronPreviewHash = "";
         $("#cron-preview").html("<p>Updating...</p>");
         $("#schedule").val(this.dataset.kind == "cron" ? this.dataset.schedule: "* * * * *");
         $("#tz")[0].tomselect.setValue(this.dataset.tz, true);
-        graceCron.value = parsed.value;
-        graceCronUnit.value = parsed.unit;
+        setDurationInput(graceCron, graceCronUnit, this.dataset.grace);
         $("#update-cron-grace").val(this.dataset.grace);
         updateCronPreview();
 
@@ -51,8 +44,7 @@ $(function () {
         $("#oncalendar-preview").html("<p>Updating...</p>");
         $("#schedule-oncalendar").val(this.dataset.kind == "oncalendar" ? this.dataset.schedule: "*-*-* *:*:*");
         $("#tz-oncalendar")[0].tomselect.setValue(this.dataset.tz, true);
-        graceOncalendar.value = parsed.value
-        graceOncalendarUnit.value = parsed.unit
+        setDurationInput(graceOncalendar, graceOncalendarUnit, this.dataset.grace);
         $("#update-oncalendar-grace").val(this.dataset.grace);
         updateOnCalendarPreview();
 
@@ -61,18 +53,8 @@ $(function () {
         return false;
     });
 
-    var secsToUnits = function(secs) {
-        if (secs % 86400 == 0) {
-            return {value: secs / 86400, unit: 86400}
-        }
-        if (secs % 3600 == 0) {
-            return {value: secs / 3600, unit: 3600}
-        }
-
-        return {value: Math.round(secs / 60), unit: 60}
-    }
-
     var pipLabels = {
+        10: "10 seconds",
         60: "1 minute",
         1800: "30 minutes",
         3600: "1 hour",
@@ -85,11 +67,12 @@ $(function () {
 
     var periodSlider = document.getElementById("period-slider");
     noUiSlider.create(periodSlider, {
-        start: [20],
+        start: [60],
         connect: "lower",
         range: {
-            'min': [60, 60],
-            '30%': [3600, 3600],
+            'min': [10, 10],
+            '15%': [60, 60],
+            '35%': [3600, 3600],
             '60%': [86400, 86400],
             '75%': [604800, 86400],
             '90%': [2592000, 2592000],
@@ -97,7 +80,7 @@ $(function () {
         },
         pips: {
             mode: 'values',
-            values: [60, 1800, 3600, 43200, 86400, 604800, 2592000, 31536000],
+            values: [10, 60, 1800, 3600, 43200, 86400, 604800, 2592000, 31536000],
             density: 4,
             format: {
                 to: function(v) { return pipLabels[v] },
@@ -110,9 +93,7 @@ $(function () {
         // Set the hidden form field
         $("#update-timeout-timeout").val(secs);
         // Set the visible value+units form fields
-        var parsed = secsToUnits(secs);
-        period.value = parsed.value;
-        periodUnit.value = parsed.unit;
+        setDurationInput(period, periodUnit, secs);
     }
 
     // Update inputs and the hidden field when user slides the period slider
@@ -128,10 +109,8 @@ $(function () {
 
     // Update the slider and the hidden field when user changes period inputs
     $("#update-timeout-modal .period-input").on("keyup change", function() {
-        var secs = Math.round(period.value * periodUnit.value);
-        period.setCustomValidity(secs <= 31536000 ? "" : "Must not exceed 365 days");
-
-        if (secs >= 60) {
+        var secs = readDurationInput(period, periodUnit);
+        if (secs !== null) {
             periodSlider.noUiSlider.set(secs);
             $("#update-timeout-timeout").val(secs);
         }
@@ -139,11 +118,12 @@ $(function () {
 
     var graceSlider = document.getElementById("grace-slider");
     noUiSlider.create(graceSlider, {
-        start: [20],
+        start: [60],
         connect: "lower",
         range: {
-            'min': [60, 60],
-            '30%': [3600, 3600],
+            'min': [10, 10],
+            '15%': [60, 60],
+            '35%': [3600, 3600],
             '60%': [86400, 86400],
             '75%': [604800, 86400],
             '90%': [2592000, 2592000],
@@ -151,7 +131,7 @@ $(function () {
         },
         pips: {
             mode: 'values',
-            values: [60, 1800, 3600, 43200, 86400, 604800, 2592000, 31536000],
+            values: [10, 60, 1800, 3600, 43200, 86400, 604800, 2592000, 31536000],
             density: 4,
             format: {
                 to: function(v) { return pipLabels[v] },
@@ -164,9 +144,7 @@ $(function () {
         // Set the hidden form field
         $("#update-timeout-grace").val(secs);
         // Set the visible value+units form fields
-        var parsed = secsToUnits(secs);
-        grace.value = parsed.value;
-        graceUnit.value = parsed.unit;
+        setDurationInput(grace, graceUnit, secs);
     }
 
     // Update inputs and the hidden field when user slides the grace slider
@@ -182,10 +160,8 @@ $(function () {
 
     // Update the slider and the hidden field when user changes grace inputs
     $("#update-timeout-modal .grace-input").on("keyup change", function() {
-        var secs = Math.round(grace.value * graceUnit.value);
-        grace.setCustomValidity(secs <= 31536000 ? "" : "Must not exceed 365 days");
-
-        if (secs >= 60) {
+        var secs = readDurationInput(grace, graceUnit);
+        if (secs !== null) {
             graceSlider.noUiSlider.set(secs);
             $("#update-timeout-grace").val(secs);
         }
@@ -262,19 +238,15 @@ $(function () {
     }
 
     $("#update-timeout-modal .update-timeout-grace-cron-input").on("keyup change", function() {
-        var secs = Math.round(graceCron.value * graceCronUnit.value);
-        graceCron.setCustomValidity(secs <= 31536000 ? "" : "Must not exceed 365 days");
-
-        if (secs >= 60) {
+        var secs = readDurationInput(graceCron, graceCronUnit);
+        if (secs !== null) {
             $("#update-cron-grace").val(secs);
         }
     });
 
     $("#update-timeout-modal .update-timeout-grace-oncalendar-input").on("keyup change", function() {
-        var secs = Math.round(graceOncalendar.value * graceOncalendarUnit.value);
-        graceOncalendar.setCustomValidity(secs <= 31536000 ? "" : "Must not exceed 365 days");
-
-        if (secs >= 60) {
+        var secs = readDurationInput(graceOncalendar, graceOncalendarUnit);
+        if (secs !== null) {
             $("#update-oncalendar-grace").val(secs);
         }
     });

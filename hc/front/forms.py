@@ -48,10 +48,10 @@ class NameTagsForm(forms.Form):
 
 class AddCheckForm(NameTagsForm):
     kind = forms.ChoiceField(choices=_choices("simple,cron,oncalendar"))
-    timeout = forms.IntegerField(min_value=60, max_value=31536000)
+    timeout = forms.IntegerField(min_value=10, max_value=31536000)
     schedule = forms.CharField(required=False, max_length=100)
     tz = forms.CharField(max_length=36, validators=[TimezoneValidator()])
-    grace = forms.IntegerField(min_value=60, max_value=31536000)
+    grace = forms.IntegerField(min_value=10, max_value=31536000)
 
     def clean_timeout(self) -> td:
         return td(seconds=self.cleaned_data["timeout"])
@@ -89,8 +89,8 @@ class FilteringRulesForm(forms.Form):
 
 
 class TimeoutForm(forms.Form):
-    timeout = forms.IntegerField(min_value=60, max_value=31536000)
-    grace = forms.IntegerField(min_value=60, max_value=31536000)
+    timeout = forms.IntegerField(min_value=10, max_value=31536000)
+    grace = forms.IntegerField(min_value=10, max_value=31536000)
 
     def clean_timeout(self) -> td:
         return td(seconds=self.cleaned_data["timeout"])
@@ -107,7 +107,7 @@ class CronPreviewForm(forms.Form):
 class CronForm(forms.Form):
     schedule = forms.CharField(max_length=100, validators=[CronValidator()])
     tz = forms.CharField(max_length=36, validators=[TimezoneValidator()])
-    grace = forms.IntegerField(min_value=60, max_value=31536000)
+    grace = forms.IntegerField(min_value=10, max_value=31536000)
 
     def clean_grace(self) -> td:
         return td(seconds=self.cleaned_data["grace"])
@@ -116,7 +116,7 @@ class CronForm(forms.Form):
 class OnCalendarForm(forms.Form):
     schedule = forms.CharField(max_length=100, validators=[OnCalendarValidator()])
     tz = forms.CharField(max_length=36, validators=[TimezoneValidator()])
-    grace = forms.IntegerField(min_value=60, max_value=31536000)
+    grace = forms.IntegerField(min_value=10, max_value=31536000)
 
     def clean_grace(self) -> td:
         return td(seconds=self.cleaned_data["grace"])

@@ -35,6 +35,62 @@ class UpdateTimeoutTestCase(BaseTestCase):
         expected_aa = self.check.last_ping + td(seconds=3600 + 60)
         self.assertEqual(self.check.alert_after, expected_aa)
 
+    def test_seconds_are_saved_without_rounding(self) -> None:
+        self.client.force_login(self.alice)
+        for seconds in (10, 20, 30, 40, 50, 123):
+            with self.subTest(seconds=seconds):
+                response = self.client.post(
+                    self.url, {"kind": "simple", "timeout": seconds, "grace": seconds}
+                )
+                self.assertEqual(response.status_code, 302)
+                self.check.refresh_from_db()
+                self.assertEqual(self.check.timeout, td(seconds=seconds))
+                self.assertEqual(self.check.grace, td(seconds=seconds))
+                assert self.check.last_ping
+                self.assertEqual(
+                    self.check.alert_after,
+                    self.check.last_ping + td(seconds=seconds * 2),
+                )
+                page = self.client.get(self.check.details_url(False))
+                self.assertContains(page, f'data-timeout="{seconds}"')
+                self.assertContains(page, f'data-grace="{seconds}"')
+
+    def test_grace_seconds_for_cron_and_oncalendar(self) -> None:
+        self.client.force_login(self.alice)
+        for kind, schedule in (("cron", "* * * * *"), ("oncalendar", "12:34")):
+            for seconds in (10, 20, 30, 40, 50):
+                with self.subTest(kind=kind, seconds=seconds):
+                    response = self.client.post(
+                        self.url,
+                        {
+                            "kind": kind,
+                            "schedule": schedule,
+                            "tz": "UTC",
+                            "grace": seconds,
+                        },
+                    )
+                    self.assertEqual(response.status_code, 302)
+                    self.check.refresh_from_db()
+                    self.assertEqual(self.check.grace, td(seconds=seconds))
+                    self.assertEqual(self.check.kind, kind)
+
+    def test_invalid_seconds_do_not_change_schedule(self) -> None:
+        self.client.force_login(self.alice)
+        previous = self.check.timeout, self.check.grace
+        for field in ("timeout", "grace"):
+            for value in (0, 9, 31536001):
+                with self.subTest(field=field, value=value):
+                    payload = {
+                        "kind": "simple",
+                        "timeout": 20,
+                        "grace": 30,
+                        field: value,
+                    }
+                    response = self.client.post(self.url, payload)
+                    self.assertEqual(response.status_code, 400)
+                    self.check.refresh_from_db()
+                    self.assertEqual((self.check.timeout, self.check.grace), previous)
+
     def test_redirect_preserves_querystring(self) -> None:
         referer = self.redirect_url + "?tag=foo"
         payload = {"kind": "simple", "timeout": 3600, "grace": 60}

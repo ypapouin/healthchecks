@@ -373,7 +373,7 @@ Example:</p>
 <dd>
 <p>number, optional, default value: {{ default_timeout }}.</p>
 <p>The expected period of this check in seconds.</p>
-<p>Minimum: 60 (one minute), maximum: 31536000 (365 days).</p>
+<p>Minimum: 10 (ten seconds), maximum: 31536000 (365 days).</p>
 <p>Example for a 5-minute timeout:</p>
 <p><pre>{"timeout": 300}</pre></p>
 </dd>
@@ -381,7 +381,7 @@ Example:</p>
 <dd>
 <p>number, optional, default value: {{ default_grace }}.</p>
 <p>The grace period for this check in seconds.</p>
-<p>Minimum: 60 (one minute), maximum: 31536000 (365 days).</p>
+<p>Minimum: 10 (ten seconds), maximum: 31536000 (365 days).</p>
 </dd>
 <dt>schedule</dt>
 <dd>
@@ -622,7 +622,7 @@ parameter, SITE_NAME will leave its value unchanged.</p>
 <dd>
 <p>number, optional.</p>
 <p>The expected period of this check in seconds.</p>
-<p>Minimum: 60 (one minute), maximum: 31536000 (365 days).</p>
+<p>Minimum: 10 (ten seconds), maximum: 31536000 (365 days).</p>
 <p>Example for a 5-minute timeout:</p>
 <p><pre>{"timeout": 300}</pre></p>
 </dd>
@@ -630,7 +630,7 @@ parameter, SITE_NAME will leave its value unchanged.</p>
 <dd>
 <p>number, optional.</p>
 <p>The grace period for this check in seconds.</p>
-<p>Minimum: 60 (one minute), maximum: 31536000 (365 days).</p>
+<p>Minimum: 10 (ten seconds), maximum: 31536000 (365 days).</p>
 </dd>
 <dt>schedule</dt>
 <dd>

@@ -405,6 +405,30 @@ class UpdateCheckTestCase(BaseTestCase):
         self.assertFalse(self.check.filter_subject)
         self.assertEqual(self.check.success_kw, "")
 
+    def test_seconds_in_all_api_versions(self) -> None:
+        for v in (1, 2, 3):
+            for seconds in (10, 20, 30, 40, 50):
+                with self.subTest(v=v, seconds=seconds):
+                    response = self.post(
+                        self.check.code, {"timeout": seconds, "grace": seconds}, v=v
+                    )
+                    self.assertEqual(response.status_code, 200)
+                    self.assertEqual(response.json()["timeout"], seconds)
+                    self.assertEqual(response.json()["grace"], seconds)
+                    self.check.refresh_from_db()
+                    self.assertEqual(self.check.timeout, td(seconds=seconds))
+                    self.assertEqual(self.check.grace, td(seconds=seconds))
+
+    def test_below_minimum_duration_is_rejected_atomically(self) -> None:
+        previous = self.check.timeout, self.check.grace, self.check.name
+        for field in ("timeout", "grace"):
+            response = self.post(self.check.code, {field: 9, "name": "Not applied"})
+            self.assertEqual(response.status_code, 400)
+            self.check.refresh_from_db()
+            self.assertEqual(
+                (self.check.timeout, self.check.grace, self.check.name), previous
+            )
+
     def test_it_accepts_60_days_timeout(self) -> None:
         r = self.post(self.check.code, {"timeout": 60 * 24 * 3600})
         self.assertEqual(r.status_code, 200)

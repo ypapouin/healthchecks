@@ -61,6 +61,13 @@
     color: var(--text-color);
 }
 
+@media (max-width: 767px) {
+    #period-slider .noUi-value:not([data-value="10"]):not([data-value="86400"]):not([data-value="31536000"]),
+    #grace-slider .noUi-value:not([data-value="10"]):not([data-value="86400"]):not([data-value="31536000"]) {
+        display: none;
+    }
+}
+
 .update-timeout-terms {
     color: var(--text-muted);
 }

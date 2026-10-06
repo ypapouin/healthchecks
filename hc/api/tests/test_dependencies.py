@@ -77,6 +77,35 @@ class DependenciesTestCase(BaseTestCase):
         self.assertTrue(any(d.duration > td() for d in self.child.downtimes(1, "UTC")))
         self.assertFalse(DependencyGraph(self.project.id).permits_reminder(self.child))
 
+    def test_second_based_timeout_and_recovery_grace(self) -> None:
+        self.child.timeout = td(seconds=10)
+        self.child.grace = td(seconds=20)
+        self.child.save()
+        start = now()
+        self.ping(self.child)
+        for seconds, status in ((9, "up"), (10, "grace"), (29, "grace"), (30, "down")):
+            with time_machine.travel(start + td(seconds=seconds), tick=False):
+                self.assertEqual(self.child.get_status(), status)
+        with time_machine.travel(start + td(seconds=31), tick=False):
+            self.command.handle_going_down()
+            self.drain()
+            flip = self.child.flip_set.get(new_status="down")
+            self.assertEqual(flip.grace_start, start + td(seconds=10))
+            self.assertEqual(flip.created, start + td(seconds=30))
+            self.assertEqual(flip.notification_state, "waiting")
+            self.ping(self.parent)
+            self.drain()
+            flip.refresh_from_db()
+            self.assertEqual(flip.resume_after, start + td(seconds=51))
+        with time_machine.travel(start + td(seconds=50), tick=False):
+            self.drain()
+            flip.refresh_from_db()
+            self.assertIsNone(flip.processed)
+        with time_machine.travel(start + td(seconds=51), tick=False):
+            self.drain()
+            flip.refresh_from_db()
+            self.assertEqual(flip.notification_state, "claimed")
+
     def test_success_before_original_grace_is_insufficient(self) -> None:
         self.ping(self.parent)
         flip = self.timeout()

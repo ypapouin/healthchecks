@@ -36,6 +36,12 @@ regular intervals: once an hour, once a day, once a week, etc.</p>
 is late. Use this parameter to account for minor, expected deviations in job
 execution times.</li>
 </ul>
+<p>Period and Grace Time accept durations from <strong>10 seconds</strong> to <strong>365 days</strong>.
+Select <strong>seconds</strong> for short intervals; the sliders use 10-second steps below
+one minute. Grace Time also supports seconds for Cron and OnCalendar checks.
+For example, with a 10-second Period and 20-second Grace Time, a simple check
+becomes Down 30 seconds after its last success if it receives no further pings.
+Alert delivery follows the worker's polling cycle; dependencies can defer it.</p>
 <p>Note: if you use the "start" signal to <a href="../measuring_script_run_time/">measure job run times</a>,
 then Grace Time also specifies the maximum allowed time gap between "start" and
 "success" signals. Whenever SITE_NAME receives a "start" signal, it expects a subsequent

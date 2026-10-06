@@ -88,7 +88,7 @@ class Spec(BaseModel):
     filter_body: bool | None = None
     filter_http_body: bool | None = None
     filter_default_fail: bool | None = None
-    grace: td | None = Field(None, ge=60, le=31536000)
+    grace: td | None = Field(None, ge=10, le=31536000)
     manual_resume: bool | None = None
     methods: Literal["", "POST"] | None = None
     name: str | None = Field(None, max_length=100)
@@ -99,7 +99,7 @@ class Spec(BaseModel):
     subject_fail: str | None = Field(None, max_length=200)
     success_kw: str | None = Field(None, max_length=200)
     tags: str | None = Field(None, max_length=500)
-    timeout: td | None = Field(None, ge=60, le=31536000)
+    timeout: td | None = Field(None, ge=10, le=31536000)
     tz: str | None = None
     unique: list[Literal["name", "slug", "tags", "timeout", "grace"]] | None = None
 

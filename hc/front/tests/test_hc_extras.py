@@ -19,10 +19,18 @@ from hc.front.templatetags.hc_extras import (
 class HcExtrasTestCase(TestCase):
     def test_hc_duration_works(self) -> None:
         samples = [
+            (1, "1 second"),
+            (10, "10 seconds"),
+            (20, "20 seconds"),
+            (30, "30 seconds"),
+            (40, "40 seconds"),
+            (50, "50 seconds"),
             (60, "1 minute"),
+            (90, "1 minute 30 seconds"),
             (120, "2 minutes"),
             (3600, "1 hour"),
             (3660, "1 hour 1 minute"),
+            (3661, "1 hour 1 minute 1 second"),
             (86400, "1 day"),
             (604800, "1 week"),
             (2419200, "4 weeks"),

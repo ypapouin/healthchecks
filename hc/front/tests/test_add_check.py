@@ -85,11 +85,38 @@ class AddCheckTestCase(BaseTestCase):
         r = self.client.post(self.url, self._payload(kind="surprise"))
         self.assertEqual(r.status_code, 400)
 
+    def test_it_accepts_seconds_for_all_schedule_types(self) -> None:
+        self.client.force_login(self.alice)
+        for kind, schedule in (
+            ("simple", ""),
+            ("cron", "* * * * *"),
+            ("oncalendar", "*-*-* *:*:00"),
+        ):
+            for seconds in (10, 20, 30, 40, 50):
+                with self.subTest(kind=kind, seconds=seconds):
+                    payload = self._payload(
+                        kind=kind,
+                        schedule=schedule,
+                        timeout=str(seconds),
+                        grace=str(seconds),
+                    )
+                    r = self.client.post(self.url, payload)
+                    self.assertEqual(r.status_code, 302)
+                    check = Check.objects.latest("id")
+                    self.assertEqual(check.timeout.total_seconds(), seconds)
+                    self.assertEqual(check.grace.total_seconds(), seconds)
+
     def test_it_validates_timeout(self) -> None:
         self.client.login(username="alice@example.org", password="password")
-        for timeout in ["1", "31536001", "a"]:
+        for timeout in ["1", "9", "31536001", "a"]:
             r = self.client.post(self.url, self._payload(timeout=timeout))
             self.assertEqual(r.status_code, 400)
+
+    def test_it_rejects_grace_below_ten_seconds(self) -> None:
+        self.client.force_login(self.alice)
+        response = self.client.post(self.url, self._payload(grace="9"))
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(Check.objects.exists())
 
     def test_it_validates_cron_expression(self) -> None:
         self.client.login(username="alice@example.org", password="password")

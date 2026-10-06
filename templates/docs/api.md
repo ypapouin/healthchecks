@@ -420,7 +420,7 @@ timeout
 
     The expected period of this check in seconds.
 
-    Minimum: 60 (one minute), maximum: 31536000 (365 days).
+    Minimum: 10 (ten seconds), maximum: 31536000 (365 days).
 
     Example for a 5-minute timeout:
 
@@ -431,7 +431,7 @@ grace
 
     The grace period for this check in seconds.
 
-    Minimum: 60 (one minute), maximum: 31536000 (365 days).
+    Minimum: 10 (ten seconds), maximum: 31536000 (365 days).
 
 schedule
 :   String, optional.
@@ -753,7 +753,7 @@ timeout
 
     The expected period of this check in seconds.
 
-    Minimum: 60 (one minute), maximum: 31536000 (365 days).
+    Minimum: 10 (ten seconds), maximum: 31536000 (365 days).
 
     Example for a 5-minute timeout:
 
@@ -764,7 +764,7 @@ grace
 
     The grace period for this check in seconds.
 
-    Minimum: 60 (one minute), maximum: 31536000 (365 days).
+    Minimum: 10 (ten seconds), maximum: 31536000 (365 days).
 
 schedule
 :   String, optional.

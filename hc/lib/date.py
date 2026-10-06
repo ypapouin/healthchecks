@@ -26,7 +26,7 @@ def format_duration(duration: timedelta) -> str:
 
     result = []
 
-    for unit in (WEEK, DAY, HOUR, MINUTE):
+    for unit in (WEEK, DAY, HOUR, MINUTE, SECOND):
         if unit == WEEK and remaining_seconds % unit.nsecs != 0:
             # Say "8 days" instead of "1 week 1 day"
             continue

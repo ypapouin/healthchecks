@@ -51,20 +51,16 @@ $(function () {
 
     // Update the hidden field when user changes period inputs
     $("#add-check-modal .period-input").on("keyup change", function() {
-        var secs = Math.round(period.value * periodUnit.value);
-        period.setCustomValidity(secs <= 31536000 ? "" : "Must not exceed 365 days");
-
-        if (secs >= 60) {
+        var secs = readDurationInput(period, periodUnit);
+        if (secs !== null) {
             $("#add-check-modal input[name=timeout]").val(secs);
         }
     })
 
     // Update the hidden field when user changes grace inputs
     $("#add-check-modal .grace-input").on("keyup change", function() {
-        var secs = Math.round(grace.value * graceUnit.value);
-        grace.setCustomValidity(secs <= 31536000 ? "" : "Must not exceed 365 days");
-
-        if (secs >= 60) {
+        var secs = readDurationInput(grace, graceUnit);
+        if (secs !== null) {
             $("#add-check-modal input[name=grace]").val(secs);
         }
     });

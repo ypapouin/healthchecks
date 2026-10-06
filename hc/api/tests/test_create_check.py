@@ -277,6 +277,23 @@ class CreateCheckTestCase(BaseTestCase):
         r = self.post({"api_key": "Y" * 32})
         self.assertEqual(r.status_code, 401)
 
+    def test_seconds_in_all_api_versions(self) -> None:
+        for v in (1, 2, 3):
+            for seconds in (10, 20, 30, 40, 50):
+                with self.subTest(v=v, seconds=seconds):
+                    response = self.post({"timeout": seconds, "grace": seconds}, v=v)
+                    self.assertEqual(response.status_code, 201)
+                    self.assertEqual(response.json()["timeout"], seconds)
+                    self.assertEqual(response.json()["grace"], seconds)
+                    check = Check.objects.latest("id")
+                    self.assertEqual(check.timeout, td(seconds=seconds))
+                    self.assertEqual(check.grace, td(seconds=seconds))
+
+    def test_minimum_duration_is_ten_seconds(self) -> None:
+        for field in ("timeout", "grace"):
+            self.post({field: 9}, expect_fragment=f"{field} is too small")
+        self.assertFalse(Check.objects.exists())
+
     def test_it_rejects_small_timeout(self) -> None:
         self.post({"timeout": 0}, expect_fragment="timeout is too small")
 
