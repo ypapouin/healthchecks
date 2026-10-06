@@ -188,6 +188,10 @@ ul.crosses li:before {
     padding-left: 20px;
 }
 
+#dependency-notification {
+    margin: 6px 0 0;
+}
+
 #dependency-help {
     margin: 8px 0 0;
 }
@@ -217,6 +221,7 @@ ul.crosses li:before {
 }
 
 #dependency-parent-save[hidden],
+#dependency-notification[hidden],
 #dependency-help[hidden] {
     display: none;
 }
@@ -224,4 +229,9 @@ ul.crosses li:before {
 #dependency-children-label {
     display: block;
     margin-top: 16px;
+}
+
+#dependencies details > form {
+    display: block;
+    margin-top: 8px;
 }

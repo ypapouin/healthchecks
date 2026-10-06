@@ -6,7 +6,7 @@ from datetime import timedelta as td
 import time_machine
 from django.test.utils import override_settings
 
-from hc.api.models import Check, Flip, Ping
+from hc.api.models import Channel, Check, Flip, Notification, Ping
 from hc.test import BaseTestCase
 
 
@@ -58,6 +58,26 @@ class DetailsTestCase(BaseTestCase):
         self.client.login(username="alice@example.org", password="password")
         r = self.client.get(self.url)
         self.assertContains(r, "bar baz foo", status_code=200)
+
+    @time_machine.travel("2026-10-06 12:00:00+00:00", tick=False)
+    def test_it_shows_last_notification_for_claimed_alert(self) -> None:
+        self.check.status = "down"
+        self.check.save()
+        self.check.create_flip("down", mark_as_processed=True)
+        self.client.force_login(self.alice)
+
+        r = self.client.get(self.url)
+        self.assertIsNone(r.context["last_notification"])
+        self.assertContains(r, "No notification recorded yet.")
+
+        channel = Channel.objects.create(project=self.project, kind="email")
+        notification = Notification.objects.create(
+            owner=self.check, channel=channel, check_status="down"
+        )
+        r = self.client.get(self.url)
+        self.assertEqual(r.context["last_notification"], notification.created)
+        self.assertContains(r, 'data-dt="2026-10-06T12:00:00+00:00"')
+        self.assertContains(r, "Last notification: 6 Oct 2026, 15:00 EEST.")
 
     def test_it_checks_ownership(self) -> None:
         self.client.login(username="charlie@example.org", password="password")

@@ -1049,6 +1049,25 @@ def _tz_switches(profile: Profile, check: Check) -> list[str]:
     return switches
 
 
+def _last_notification(check: Check, graph: DependencyGraph) -> datetime | None:
+    incident = graph.incidents.get(check.id)
+    if (
+        check.status != "down"
+        or incident is None
+        or incident.notification_state != "claimed"
+    ):
+        return None
+
+    # A claim can precede delivery, so do not use its processing timestamp or
+    # a notification from a previous incident as the last notification date.
+    return (
+        check.notification_set.filter(check_status="down", created__gte=incident.created)
+        .order_by("-created", "-id")
+        .values_list("created", flat=True)
+        .first()
+    )
+
+
 @login_required
 def details(request: AuthenticatedHttpRequest, code: UUID) -> HttpResponse:
     _refresh_last_active_date(request)
@@ -1077,6 +1096,7 @@ def details(request: AuthenticatedHttpRequest, code: UUID) -> HttpResponse:
         "page": "details",
         "dependency_checks": sibling_checks,
         "children": [c for c in sibling_checks if c.parent_id == check.id],
+        "last_notification": _last_notification(check, graph),
         "project": check.project,
         "check": check,
         "rw": rw,
@@ -1191,7 +1211,9 @@ def status_single(request: HttpRequest, code: UUID) -> HttpResponse:
     request = cast(AuthenticatedHttpRequest, request)
     check, rw = _get_check_for_user(request, code, preload_owner_profile=True)
 
-    dependency = DependencyGraph(check.project_id).describe(check)
+    graph = DependencyGraph(check.project_id)
+    dependency = graph.describe(check)
+    last_notification = _last_notification(check, graph)
     status = check.get_status()
     events = _get_events(check, 30, start=check.created, end=now())
     updated = "1"
@@ -1205,6 +1227,7 @@ def status_single(request: HttpRequest, code: UUID) -> HttpResponse:
     doc = {
         "dependency": dependency,
         "dependency_updated": dependency_updated,
+        "last_notification": last_notification.isoformat() if last_notification else None,
         "status": status,
         "status_text": STATUS_TEXT_TMPL.render({"check": check, "rw": rw}),
         "title": down_title(check),

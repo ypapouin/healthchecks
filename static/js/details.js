@@ -84,6 +84,16 @@ $(function () {
     // Look up the active tz switch to determine the initial display timezone:
     var initialTz = $(".active", "#tz-switcher").data("tz");
     var dateFormatter = new DateFormatter(initialTz);
+    var notification = document.getElementById("dependency-notification");
+    function formatDependencyDates() {
+        notification.textContent = notification.dataset.dt
+            ? "Last notification: " + dateFormatter.formatTimestamp(new Date(notification.dataset.dt)) + "."
+            : "No notification recorded yet.";
+        document.querySelectorAll("#dependency-blockers time").forEach(function (time) {
+            time.textContent = dateFormatter.formatTimestamp(new Date(time.dateTime));
+        });
+    }
+    formatDependencyDates();
     var lastStatusText = "";
     var lastUpdated = "";
     var lastDependencyUpdated = "";
@@ -97,14 +107,25 @@ $(function () {
                 lastDependencyUpdated = data.dependency_updated || "";
                 if (data.dependency) {
                     updateDependencyStatus(document.getElementById("dependency-status"), data.dependency);
+                    notification.hidden = data.dependency.state !== "claimed";
+                    notification.dataset.dt = data.last_notification || "";
                     $("#dependency-path").text(data.dependency.ancestors.map(a => a.name).join(" → ") || "No ancestors");
                     var blockers = document.getElementById("dependency-blockers");
                     blockers.replaceChildren();
                     data.dependency.blockers.forEach(function (b) {
                         var li = document.createElement("li");
-                        li.textContent = b.name + ": " + b.reason + ". Last success: " + (b.last_success || "never") + ".";
+                        li.textContent = b.name + ": " + b.reason + ". Last success: ";
+                        if (b.last_success) {
+                            var time = document.createElement("time");
+                            time.dateTime = b.last_success;
+                            li.appendChild(time);
+                        } else {
+                            li.append("never");
+                        }
+                        li.append(".");
                         blockers.appendChild(li);
                     });
+                    formatDependencyDates();
                     document.getElementById("dependency-help").hidden = !data.dependency.parent;
                 }
                 if (data.status_text != lastStatusText) {
@@ -162,6 +183,7 @@ $(function () {
     $("#tz-switcher").click(function(ev) {
         dateFormatter.setTimezone(ev.target.dataset.tz);
         formatPingDates();
+        formatDependencyDates();
     });
 
     var transferFormLoadStarted = false;

@@ -4,7 +4,7 @@ from datetime import timedelta as td
 
 from django.utils.timezone import now
 
-from hc.api.models import Check, Ping
+from hc.api.models import Channel, Check, Notification, Ping
 from hc.test import BaseTestCase
 
 
@@ -72,6 +72,60 @@ class StatusSingleTestCase(BaseTestCase):
         doc = r.json()
 
         self.assertNotIn("events", doc)
+
+    def test_last_notification_updates_without_a_health_change(self) -> None:
+        self.check.status = "down"
+        self.check.save()
+        channel = Channel.objects.create(project=self.project, kind="email")
+        Notification.objects.create(
+            owner=self.check,
+            channel=channel,
+            check_status="down",
+            created=now() - td(hours=1),
+        )
+        self.check.create_flip("down", mark_as_processed=True)
+        self.client.force_login(self.alice)
+        first = self.client.get(self.url).json()
+        # A previous incident's notification must not stand in for a new claim.
+        self.assertIsNone(first["last_notification"])
+
+        for _ in range(2):
+            notification = Notification.objects.create(
+                owner=self.check, channel=channel, check_status="down"
+            )
+        # Neither a recovery nor another check's alert is this incident's alert.
+        Notification.objects.create(
+            owner=self.check, channel=channel, check_status="up"
+        )
+        other = Check.objects.create(project=self.project)
+        Notification.objects.create(owner=other, channel=channel, check_status="down")
+
+        second = self.client.get(
+            self.url, {"u": first["updated"], "d": first["dependency_updated"]}
+        ).json()
+        self.assertEqual(second["status"], first["status"])
+        self.assertNotIn("events", second)
+        self.assertEqual(second["last_notification"], notification.created.isoformat())
+
+    def test_last_notification_is_only_available_for_claimed_down_incidents(self) -> None:
+        self.check.status = "down"
+        self.check.save()
+        self.check.create_flip("down", mark_as_processed=True)
+        channel = Channel.objects.create(project=self.project, kind="email")
+        Notification.objects.create(
+            owner=self.check, channel=channel, check_status="down"
+        )
+        self.client.force_login(self.alice)
+        for state in ("waiting", "resuming", "cancelled"):
+            with self.subTest(state=state):
+                self.check.flip_set.update(notification_state=state)
+                self.assertIsNone(self.client.get(self.url).json()["last_notification"])
+
+        self.check.flip_set.update(notification_state="claimed")
+        self.check.status = "up"
+        self.check.last_ping = now()
+        self.check.save()
+        self.assertIsNone(self.client.get(self.url).json()["last_notification"])
 
     def test_it_allows_cross_team_access(self) -> None:
         self.client.login(username="bob@example.org", password="password")
