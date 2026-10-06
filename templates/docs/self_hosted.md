@@ -229,10 +229,22 @@ reserved before calling integrations: a crash after reservation can lose a
 notification, and a reservation does not mean an integration accepted it.
 
 All application paths acquire project locks before changing the dependency graph
-or claiming an alert. This favors consistent decisions across workers, at the
-cost of serializing concurrent pings and edits within one project. PostgreSQL
+or claiming an alert. Projects connected by dependencies are locked together in
+a deterministic order, including proposed parent/transfer projects. If the graph
+expands during lock acquisition, the transaction retries before making changes.
+This favors consistent decisions across workers, at the cost of serializing
+concurrent pings and edits within a connected group of projects. PostgreSQL
 provides row locking; SQLite serializes writers. Direct SQL or queryset updates
 that bypass these application paths must not be used to edit dependencies.
+
+The shared-check migration adds `shared` (false for existing checks) and an
+independent, unique `dependency_id` for each check. It preserves existing local
+dependencies and incident state. Stop old web and alert-worker processes, apply
+the migration, and start all processes on the new version before enabling any
+sharing. Older workers cannot correctly evaluate cross-project ancestors; do not
+mix versions while shared dependencies are in use. A shared check exposes limited
+monitoring metadata to authenticated users and API clients across the instance.
+It does not grant access to the source project or its ping credentials.
 
 With StatsD configured, monitor these cumulative counters:
 

@@ -196,7 +196,8 @@ ul.crosses li:before {
     margin: 8px 0 0;
 }
 
-#dependency-parent-form {
+#dependency-parent-form,
+#dependency-sharing-form {
     display: block;
 }
 
@@ -221,6 +222,8 @@ ul.crosses li:before {
 }
 
 #dependency-parent-save[hidden],
+#dependency-sharing-save[hidden],
+#dependency-parent-sharing-help[hidden],
 #dependency-notification[hidden],
 #dependency-help[hidden] {
     display: none;

@@ -176,7 +176,7 @@ $(function () {
                 if (visited.has(row.id)) continue;
                 visited.add(row.id);
                 ordered.push(row);
-                row.querySelector(".check-name-cell").style.paddingLeft = (8 + depth * 24) + "px";
+                row.querySelector(".check-name-cell").style.paddingLeft = `calc(8px + ${depth} * var(--dependency-indent))`;
                 row.style.display = visible.has(row.id) && !hidden ? "" : "none";
                 var branch = children.get(row.id) || [];
                 var toggle = row.querySelector(".dependency-toggle");
@@ -430,8 +430,9 @@ $(function () {
                         row.dataset.pending = String(el.dependency.pending);
                         var parentInfo = row.querySelector(".dependency-parent");
                         parentInfo.hidden = !el.dependency.parent;
-                        parentInfo.querySelector(".dependency-parent-name").textContent = el.dependency.parent ? el.dependency.parent.name : "";
-                        parentInfo.querySelector(".dependency-parent-badge").title = el.dependency.parent ? "Parent: " + el.dependency.parent.name : "";
+                        parentInfo.classList.toggle("external", !!el.dependency.parent?.external);
+                        parentInfo.querySelector(".dependency-parent-name").textContent = el.dependency.parent ? el.dependency.parent.label : "";
+                        parentInfo.querySelector(".dependency-parent-badge").title = el.dependency.parent ? "Parent: " + el.dependency.parent.label : "";
                         updateDependencyStatus(row.querySelector(".dependency-status"), el.dependency);
                         if (el.dependency.pending) pendingCount++;
                     }

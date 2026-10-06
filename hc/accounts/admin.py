@@ -18,6 +18,7 @@ from django.utils.html import format_html
 from django_stubs_ext import WithAnnotations
 
 from hc.accounts.models import Credential, Profile, Project
+from hc.api.dependencies import delete_projects, delete_users
 from hc.api.models import Check
 
 Lookups = Iterable[tuple[str, str]]
@@ -250,6 +251,14 @@ class ProjectAnnotations(TypedDict):
 
 @admin.register(Project)
 class ProjectAdmin(ModelAdmin[Project]):
+    def delete_model(self, request: HttpRequest, obj: Project) -> None:
+        delete_projects(Project.objects.filter(pk=obj.pk))
+
+    def delete_queryset(
+        self, request: HttpRequest, queryset: QuerySet[Project]
+    ) -> None:
+        delete_projects(queryset)
+
     readonly_fields = ("code", "owner")
     list_select_related = ("owner",)
     list_display = ("id", "name_", "users", "usage", "switch")
@@ -296,6 +305,12 @@ admin.site.unregister(User)
 
 @admin.register(User)
 class HcUserAdmin(UserAdmin[User]):
+    def delete_model(self, request: HttpRequest, obj: User) -> None:
+        delete_users(User.objects.filter(pk=obj.pk))
+
+    def delete_queryset(self, request: HttpRequest, queryset: QuerySet[User]) -> None:
+        delete_users(queryset)
+
     list_display = (
         "id",
         "email",

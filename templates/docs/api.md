@@ -1573,7 +1573,15 @@ API v3 accepts `parent` in both create and update requests:
 ```
 
 Use `null` to detach. On update, omitting `parent` keeps the existing parent.
-The UUID must identify a check in the same project. Self references and cycles
+The UUID must identify a check in the same project. To use a shared parent in
+another project, use its independent dependency identifier:
+
+```json
+{"parent": "shared:11111111-1111-1111-1111-111111111111"}
+```
+
+This identifier is not the check's ping UUID. The parent must currently be shared,
+even if the same user owns both projects. Self references and cycles across any projects
 return HTTP 400 without applying any part of the request. API v1/v2 retain their
 existing contracts and do not configure dependencies.
 
@@ -1581,16 +1589,35 @@ V3 check responses additionally include:
 
 Field | Meaning
 ------|--------
-`parent` | Parent UUID, or `null`. For read-only keys, the parent's `unique_key` replaces the UUID.
+`parent` | Local parent UUID, external `shared:<dependency_id>`, or `null`. For read-only keys, a local parent's `unique_key` replaces its UUID.
+`shared` | Whether this check can be used as a parent by other projects. Read-only.
+`dependency_id` | Independent UUID used in shared parent references. Read-only; cannot be used to ping the check.
 `last_success` | ISO 8601 timestamp of the last accepted success, or `null`.
 `dependency.state` | `none`, `ready`, `waiting`, `resuming`, `claimed`, or `cancelled` for the current Down incident.
-`dependency.parent` | Parent reference with `id`, `name`, `status`, and `last_success`, or `null`.
+`dependency.parent` | Parent reference with `id`, `name`, `label`, `project` (name), `status`, `last_success`, `external`, `hidden`, and `url`, or `null`.
 `dependency.ancestors` | Ancestor references from root to immediate parent, including paused ancestors for context.
 `dependency.blockers` | Ineligible non-paused ancestor references, each including a human-readable `reason`.
 `dependency.notification_after` | Recovery grace deadline in ISO 8601 format, or `null`.
 `dependency.pending` | Whether the incident is waiting for ancestors or in recovery grace.
 
-All dependency reference IDs use masked unique keys with read-only API keys.
+Read-only API keys mask local reference IDs with unique keys. All external
+references use independent dependency IDs, never ping UUIDs. A project key grants
+no access to another project's details: external `url` values are null. Private
+inaccessible ancestors are anonymized with `hidden: true`, a generic label/reason,
+and null identifiers, project, status and timestamps. Consecutive private ancestors
+are collapsed in the path; private blockers are grouped in one generic entry.
+
+`GET /api/v3/shared-checks/` lists shared parent candidates across the instance.
+It requires a valid read-only or read-write project API key. Each entry in `checks`
+contains only `id` (`shared:<dependency_id>`), `name`, `project` (name), `status`,
+and `last_success`. Use `q` to search check/project names and `page` (starting at 1)
+to paginate; pages contain up to 50 entries. `next_page` is the next page number,
+or null. Invalid pages return HTTP 400. Unshared checks are omitted.
+
+API v3 rejects attempts to set `shared` or `dependency_id` on create/update.
+Only project owners, managers and superadministrators can change sharing in the
+authenticated web interface. Read-only keys cannot modify parent relationships.
+
 Paused ancestors are ignored for timeout alerts and reminders, including their
 last-success requirement. Traversal continues through them to the grandparents
 and higher ancestors; the structural `parent` and `ancestors` references remain.

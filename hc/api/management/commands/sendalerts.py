@@ -15,7 +15,12 @@ from django.core.management.base import BaseCommand
 from django.db import close_old_connections, connection
 from django.utils.timezone import now
 
-from hc.api.dependencies import DependencyGraph, evaluate, locked_check
+from hc.api.dependencies import (
+    DependencyGraph,
+    evaluate,
+    locked_check,
+    update_reminders,
+)
 from hc.api.models import Check, Flip
 from hc.lib.statsd import statsd
 
@@ -32,7 +37,7 @@ def notify(flip: Flip) -> str | None:
 
     # Set or clear dates for followup nags
     check = flip.owner
-    check.project.update_next_nag_dates()
+    update_reminders({check.pk})
     channels = flip.select_channels()
     if not channels:
         return None

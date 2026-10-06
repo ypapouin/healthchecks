@@ -22,7 +22,6 @@ from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import PermissionDenied, ValidationError
-from django.db import transaction
 from django.db.models import BinaryField, Case, Count, F, Q, When
 from django.db.models.functions import Substr
 from django.http import (
@@ -46,9 +45,16 @@ from hc.accounts.http import AuthenticatedHttpRequest
 from hc.accounts.models import Member, Profile, Project
 from hc.api.dependencies import (
     DependencyGraph,
-    lock_projects,
+    can_share,
     locked_check,
+    locked_projects,
+    parent_options,
+    parent_project,
+    project_label,
+    resolve_parent,
     set_dependencies,
+    set_sharing,
+    visible_projects,
 )
 from hc.api.models import (
     DEFAULT_GRACE,
@@ -251,8 +257,9 @@ def checks(request: AuthenticatedHttpRequest, code: UUID) -> HttpResponse:
     checks = list(q.prefetch_related("channel_set"))
     sortchecks(checks, request.profile.sort)
     graph = DependencyGraph(project.id, checks)
+    accessible = visible_projects(request.user)
     for check in checks:
-        check.dependency_info = graph.describe(check)
+        check.dependency_info = graph.describe(check, accessible=accessible)
 
     tags_counts, num_down = _tags_counts(checks)
     tags_counts.sort(key=lambda item: item[0].lower())
@@ -305,6 +312,7 @@ def checks(request: AuthenticatedHttpRequest, code: UUID) -> HttpResponse:
         "page": "checks",
         "rw": rw,
         "checks": checks,
+        "parent_options": parent_options(project.id) if rw else [],
         "channels": channels,
         "num_down": num_down,
         "num_pending": sum(c.dependency_info["pending"] for c in checks),
@@ -333,9 +341,10 @@ def status(request: HttpRequest, code: UUID) -> HttpResponse:
         return HttpResponseForbidden()
 
     project, _rw = _get_project_for_user(request, code)
-    checks = list(Check.objects.filter(project=project))
+    checks = list(Check.objects.filter(project=project).select_related("project"))
 
     graph = DependencyGraph(project.id, checks)
+    accessible = visible_projects(request.user)
     details = []
     for check in checks:
         ctx = {"check": check}
@@ -344,7 +353,7 @@ def status(request: HttpRequest, code: UUID) -> HttpResponse:
                 "code": str(check.code),
                 "status": check.get_status(),
                 "last_ping": LAST_PING_TMPL.render(ctx).strip(),
-                "dependency": graph.describe(check),
+                "dependency": graph.describe(check, accessible=accessible),
                 "started": check.last_start is not None,
             }
         )
@@ -552,14 +561,16 @@ def add_check(request: AuthenticatedHttpRequest, code: UUID) -> HttpResponse:
     if not form.is_valid():
         return HttpResponseBadRequest()
 
-    with transaction.atomic():
-        lock_projects(project.id)
+    try:
+        extra = parent_project(project.id, request.POST.get("parent"))
+    except ValidationError as exc:
+        return HttpResponseBadRequest("; ".join(exc.messages))
+    with locked_projects(project.id, extra):
         check = Check(project=project)
-        if parent_code := request.POST.get("parent"):
-            try:
-                check.parent = Check.objects.get(project=project, code=parent_code)
-            except (Check.DoesNotExist, ValidationError):
-                return HttpResponseBadRequest("Parent must belong to the same project.")
+        try:
+            check.parent = resolve_parent(project.id, request.POST.get("parent"))
+        except ValidationError as exc:
+            return HttpResponseBadRequest("; ".join(exc.messages))
         check.name = form.cleaned_data["name"]
         check.slug = form.cleaned_data["slug"]
         check.tags = form.cleaned_data["tags"]
@@ -568,7 +579,10 @@ def add_check(request: AuthenticatedHttpRequest, code: UUID) -> HttpResponse:
         check.schedule = form.cleaned_data["schedule"]
         check.tz = form.cleaned_data["tz"]
         check.grace = form.cleaned_data["grace"]
-        check.save()
+        try:
+            check.save()
+        except ValidationError as exc:
+            return HttpResponseBadRequest("; ".join(exc.messages))
 
         check.assign_all_channels()
 
@@ -582,7 +596,9 @@ def add_check(request: AuthenticatedHttpRequest, code: UUID) -> HttpResponse:
 def dependencies(request: AuthenticatedHttpRequest, code: UUID) -> HttpResponse:
     check = _get_rw_check_for_user(request, code)
     try:
-        if request.POST.get("operation") == "children":
+        if request.POST.get("operation") == "sharing":
+            set_sharing(check, request.POST.get("shared") == "on", request.user)
+        elif request.POST.get("operation") == "children":
             set_dependencies(check, children=request.POST.getlist("children"))
         else:
             set_dependencies(check, parent=request.POST.get("parent") or None)
@@ -1061,11 +1077,29 @@ def _last_notification(check: Check, graph: DependencyGraph) -> datetime | None:
     # A claim can precede delivery, so do not use its processing timestamp or
     # a notification from a previous incident as the last notification date.
     return (
-        check.notification_set.filter(check_status="down", created__gte=incident.created)
+        check.notification_set.filter(
+            check_status="down", created__gte=incident.created
+        )
         .order_by("-created", "-id")
         .values_list("created", flat=True)
         .first()
     )
+
+
+def _dependency_children(check: Check, accessible: set[int]) -> list[dict[str, object]]:
+    return [
+        {
+            "name": child.name or "unnamed",
+            "project": project_label(child.project),
+            "external": child.project_id != check.project_id,
+            "url": reverse("hc-uncloak", args=[child.unique_key])
+            if child.project_id in accessible
+            else None,
+        }
+        for child in check.children.select_related("project").order_by(
+            "project__name", "name", "id"
+        )
+    ]
 
 
 @login_required
@@ -1085,9 +1119,14 @@ def details(request: AuthenticatedHttpRequest, code: UUID) -> HttpResponse:
         channels.append(channel)
 
     all_tags = set()
-    sibling_checks = list(Check.objects.filter(project=check.project))
+    sibling_checks = list(
+        Check.objects.filter(project=check.project).select_related(
+            "project", "parent__project"
+        )
+    )
     graph = DependencyGraph(check.project_id, sibling_checks)
-    check.dependency_info = graph.describe(check)
+    accessible = visible_projects(request.user)
+    check.dependency_info = graph.describe(check, accessible=accessible)
     for sibling in sibling_checks:
         if sibling.tags:
             all_tags.update(sibling.tags.split(" "))
@@ -1095,7 +1134,9 @@ def details(request: AuthenticatedHttpRequest, code: UUID) -> HttpResponse:
     ctx = {
         "page": "details",
         "dependency_checks": sibling_checks,
-        "children": [c for c in sibling_checks if c.parent_id == check.id],
+        "children": _dependency_children(check, accessible),
+        "parent_options": parent_options(check.project_id, check.id) if rw else [],
+        "can_share": can_share(request.user, check.project),
         "last_notification": _last_notification(check, graph),
         "project": check.project,
         "check": check,
@@ -1117,7 +1158,12 @@ def details(request: AuthenticatedHttpRequest, code: UUID) -> HttpResponse:
 
 @login_required
 def uncloak(request: AuthenticatedHttpRequest, unique_key: str) -> HttpResponse:
-    for check in request.profile.checks_from_all_projects().only("code"):
+    checks = (
+        Check.objects.all()
+        if request.user.is_superuser
+        else request.profile.checks_from_all_projects()
+    )
+    for check in checks.only("code"):
         if check.unique_key == unique_key:
             return redirect("hc-details", check.code)
 
@@ -1139,8 +1185,7 @@ def transfer(request: AuthenticatedHttpRequest, code: UUID) -> HttpResponse:
                 return HttpResponseBadRequest()
 
         expected_project_id = check.project_id
-        with transaction.atomic():
-            lock_projects(expected_project_id, target_project.id)
+        with locked_projects(expected_project_id, target_project.id):
             check.refresh_from_db()
             if check.project_id != expected_project_id:
                 raise PermissionDenied
@@ -1212,7 +1257,8 @@ def status_single(request: HttpRequest, code: UUID) -> HttpResponse:
     check, rw = _get_check_for_user(request, code, preload_owner_profile=True)
 
     graph = DependencyGraph(check.project_id)
-    dependency = graph.describe(check)
+    accessible = visible_projects(request.user)
+    dependency = graph.describe(check, accessible=accessible)
     last_notification = _last_notification(check, graph)
     status = check.get_status()
     events = _get_events(check, 30, start=check.created, end=now())
@@ -1226,8 +1272,13 @@ def status_single(request: HttpRequest, code: UUID) -> HttpResponse:
     ).hexdigest()
     doc = {
         "dependency": dependency,
+        "children": _dependency_children(check, accessible),
+        "shared": check.shared,
+        "can_share": can_share(request.user, check.project),
         "dependency_updated": dependency_updated,
-        "last_notification": last_notification.isoformat() if last_notification else None,
+        "last_notification": last_notification.isoformat()
+        if last_notification
+        else None,
         "status": status,
         "status_text": STATUS_TEXT_TMPL.render({"check": check, "rw": rw}),
         "title": down_title(check),

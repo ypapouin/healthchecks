@@ -36,6 +36,7 @@ from hc.accounts import forms
 from hc.accounts.decorators import require_sudo_mode
 from hc.accounts.http import AuthenticatedHttpRequest
 from hc.accounts.models import Credential, Member, Profile, Project
+from hc.api.dependencies import delete_projects, delete_users
 from hc.api.models import Channel, Check, TokenBucket
 from hc.lib.tz import all_timezones
 from hc.lib.webauthn import CreateHelper, GetHelper
@@ -692,7 +693,7 @@ def close(request: AuthenticatedHttpRequest) -> HttpResponse:
                 sub.cancel()
 
             # Deleting user also deletes its profile, checks, channels etc.
-            user.delete()
+            delete_users(User.objects.filter(pk=user.pk))
 
             request.session.flush()
             path = reverse("hc-login", query={"account-closed": 1})
@@ -709,9 +710,7 @@ def close(request: AuthenticatedHttpRequest) -> HttpResponse:
 @login_required
 def remove_project(request: AuthenticatedHttpRequest, code: str) -> HttpResponse:
     project = get_object_or_404(Project, code=code, owner=request.user)
-    for check in project.check_set.all():
-        check.rename_and_delete()
-    project.delete()
+    delete_projects(Project.objects.filter(pk=project.pk))
     return redirect("hc-index")
 
 

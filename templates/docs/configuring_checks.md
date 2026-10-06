@@ -155,11 +155,38 @@ it will classify the ping as a failure signal.
 
 ## Check Dependencies {#check-dependencies}
 
-A check can have one parent in the same project. Parents can have multiple
+A check can have one parent in the same project, or a shared parent in another
+project on the same instance. Parents can have multiple
 children, forming a hierarchy. Configure the parent when adding a check or in
 **Dependencies** on its details page. **Add children / edit selection** replaces
-the direct children; the selector shows which existing parents will be replaced.
-Self references, cycles, and dependencies across projects are rejected atomically.
+the direct children in the current project; the selector shows which existing
+parents will be replaced. Children in other projects are preserved and cannot
+be edited here, even if you have access to their projects. Self references,
+cycles (including across projects), and external unshared parents are rejected
+atomically.
+
+### Sharing checks
+
+In **Dependencies**, the project owner, a manager, or a superadministrator can
+enable **Share this check** and click **Save sharing**. Sharing is off by default.
+Any member with write access to a child can then select this parent, even without
+access to its project. External choices display **Project — Check**. The parent
+project's members can see the names and projects of its external children;
+selecting an external parent discloses these names to them.
+
+Sharing publishes only the check's name, project name, status and last success.
+It does not grant access to its details page, logs, description, integrations or
+ping URLs. External references use a separate identifier that cannot ping the
+check. Access to a details link is still checked against project membership.
+Private ancestors you cannot access still affect alert eligibility, but their
+identity, detailed status and timestamps are hidden behind **Private dependency**.
+Names of external children are visible on the parent's details page; they are
+linked only when the viewer already has access to their project.
+
+Turning sharing off detaches direct children in other projects, preserving local
+children and the detached children's descendants. Waiting alerts are reevaluated
+using the normal recovery grace. Sharing can only be changed in the authenticated
+web interface, not with a project API key. The API can select already shared parents.
 
 Dependencies control timeout notifications. Checks still become Down on time,
 and their event logs and uptime reports retain the actual downtime. A timeout
@@ -203,12 +230,14 @@ The checks table defaults to **List**, with the parent displayed below each name
 **Hierarchy** indents children and supports collapsible branches; your choice is
 saved per project in this browser. The current sort applies within each sibling
 group. Searching or filtering retains ancestors as context and opens matching
-paths. **Pending alerts** filters waiting and recovery-grace incidents. Badges,
+paths. An external parent is shown as a badge in both views; its child is a root
+of the local hierarchy. **Pending alerts** filters waiting and recovery-grace incidents. Badges,
 blocking reasons, last successful signals, and recovery deadlines refresh even
 when a check remains Down.
 
 Deleting a parent detaches its direct children. Transferring a check detaches both
-its parent and direct children; descendants stay in their project. Copying keeps
+its parent and direct children and turns sharing off; descendants stay in their
+project. Copies start unshared with a new dependency identifier. Copying keeps
 the parent, but not children, runtime state, or incidents. Pausing a child cancels
 its pending timeout; as a parent it becomes transparent to its descendants. Clearing a check's
 history also clears its success and incident data. Routine log pruning retains

@@ -109,24 +109,49 @@ $(function () {
                     updateDependencyStatus(document.getElementById("dependency-status"), data.dependency);
                     notification.hidden = data.dependency.state !== "claimed";
                     notification.dataset.dt = data.last_notification || "";
-                    $("#dependency-path").text(data.dependency.ancestors.map(a => a.name).join(" → ") || "No ancestors");
+                    var path = document.getElementById("dependency-path");
+                    path.replaceChildren();
+                    data.dependency.ancestors.forEach(function (ancestor) {
+                        var item = document.createElement(ancestor.url ? "a" : "span");
+                        if (ancestor.url) item.href = ancestor.url;
+                        item.textContent = ancestor.label;
+                        path.append(item, " → ");
+                    });
+                    path.append(path.dataset.checkName);
                     var blockers = document.getElementById("dependency-blockers");
                     blockers.replaceChildren();
                     data.dependency.blockers.forEach(function (b) {
                         var li = document.createElement("li");
-                        li.textContent = b.name + ": " + b.reason + ". Last success: ";
-                        if (b.last_success) {
+                        li.textContent = b.label + ": " + b.reason + ".";
+                        if (!b.hidden) li.append(" Last success: ");
+                        if (!b.hidden && b.last_success) {
                             var time = document.createElement("time");
                             time.dateTime = b.last_success;
                             li.appendChild(time);
-                        } else {
+                        } else if (!b.hidden) {
                             li.append("never");
                         }
-                        li.append(".");
+                        if (!b.hidden) li.append(".");
                         blockers.appendChild(li);
                     });
                     formatDependencyDates();
                     document.getElementById("dependency-help").hidden = !data.dependency.parent;
+                    var children = document.getElementById("dependency-children-list");
+                    children.replaceChildren();
+                    data.children.forEach(function (child) {
+                        var li = document.createElement("li");
+                        var item = document.createElement(child.url ? "a" : "span");
+                        if (child.url) item.href = child.url;
+                        item.textContent = (child.external ? child.project + " — " : "") + child.name;
+                        li.appendChild(item);
+                        children.appendChild(li);
+                    });
+                    if (!data.children.length) {
+                        var empty = document.createElement("li");
+                        empty.textContent = "No children";
+                        children.appendChild(empty);
+                    }
+                    $(document).trigger("dependencies:updated", [data]);
                 }
                 if (data.status_text != lastStatusText) {
                     lastStatusText = data.status_text;

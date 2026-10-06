@@ -1,6 +1,13 @@
 <div id="dependencies" class="details-block">
     <h2>Dependencies</h2>
-    <p id="dependency-path">{% for ancestor in check.dependency_info.ancestors %}{{ ancestor.name }} → {% endfor %}{{ check.name|default:"unnamed" }}</p>
+    <p id="dependency-path" data-check-name="{{ check.name|default:'unnamed' }}">{% for ancestor in check.dependency_info.ancestors %}{% if ancestor.url %}<a href="{{ ancestor.url }}">{{ ancestor.label }}</a>{% else %}{{ ancestor.label }}{% endif %} → {% endfor %}{{ check.name|default:"unnamed" }}</p>
+    <form id="dependency-sharing-form" method="post" action="{% url 'hc-dependencies' check.code %}">
+        {% csrf_token %}
+        <input type="hidden" name="operation" value="sharing">
+        <label><input id="dependency-shared" type="checkbox" name="shared" {% if check.shared %}checked{% endif %} {% if not can_share %}disabled{% endif %}> Share this check</label>
+        <button id="dependency-sharing-save" class="btn btn-sm btn-primary" type="submit" hidden {% if not can_share %}disabled{% endif %}>Save sharing</button>
+        <p class="help-block">Sharing lets checks in any project on this instance use this check as a parent. Its name, project, status and last success become visible. Turning sharing off detaches its children in other projects.</p>
+    </form>
     {% if rw %}
     <form id="dependency-parent-form" method="post" action="{% url 'hc-dependencies' check.code %}">
         {% csrf_token %}
@@ -9,17 +16,18 @@
             <div class="dependency-parent-select">
                 <select id="dependency-parent" class="form-control input-sm dependency-select" name="parent">
                     <option value="">No parent</option>
-                    {% for candidate in dependency_checks %}{% if candidate.id != check.id %}
-                    <option value="{{ candidate.code }}" {% if candidate.id == check.parent_id %}selected{% endif %}>{{ candidate.name|default:"unnamed" }}</option>
-                    {% endif %}{% endfor %}
+                    {% for candidate in parent_options %}
+                    <option value="{{ candidate.value }}" data-external="{{ candidate.external|yesno:'true,false' }}" {% if candidate.pk == check.parent_id %}selected{% endif %}>{{ candidate.label }}</option>
+                    {% endfor %}
                 </select>
             </div>
             <button id="dependency-parent-save" class="btn btn-sm btn-primary" type="submit" hidden>Save parent</button>
         </div>
+        <p id="dependency-parent-sharing-help" class="help-block" {% if not check.dependency_info.parent.external %}hidden{% endif %}>Using a parent in another project makes this check's name and project visible to that project's members. It does not give them access to this check.</p>
     </form>
     {% endif %}
     <label id="dependency-children-label"{% if rw %} for="dependency-children"{% endif %}>Children</label>
-    <ul aria-labelledby="dependency-children-label">{% for child in children %}<li><a href="{% url 'hc-details' child.code %}">{{ child.name|default:"unnamed" }}</a></li>{% empty %}<li>No children</li>{% endfor %}</ul>
+    <ul id="dependency-children-list" aria-labelledby="dependency-children-label">{% for child in children %}<li>{% if child.url %}<a href="{{ child.url }}">{% endif %}{% if child.external %}{{ child.project }} — {% endif %}{{ child.name }}{% if child.url %}</a>{% endif %}</li>{% empty %}<li>No children</li>{% endfor %}</ul>
     {% if rw %}
     <details>
         <summary class="btn btn-sm btn-default">Add children / edit selection</summary>
@@ -28,10 +36,10 @@
             <input type="hidden" name="operation" value="children">
             <select id="dependency-children" class="dependency-select" name="children" multiple>
                 {% for candidate in dependency_checks %}{% if candidate.id != check.id %}
-                <option value="{{ candidate.code }}" data-parent="{{ candidate.parent_id|default:'' }}" {% if candidate.parent_id == check.id %}selected{% endif %}>{{ candidate.name|default:"unnamed" }}{% if candidate.parent_id and candidate.parent_id != check.id %} — replaces parent: {{ candidate.parent.name|default:"unnamed" }}{% endif %}</option>
+                <option value="{{ candidate.code }}" {% if candidate.parent_id == check.id %}selected{% endif %}>{{ candidate.name|default:"unnamed" }}{% if candidate.parent_id and candidate.parent_id != check.id %} — replaces parent: {{ candidate.parent.name|default:"unnamed" }}{% endif %}</option>
                 {% endif %}{% endfor %}
             </select>
-            <p class="help-block">The selected checks become direct children. Their previous parents are replaced. Unselected current children are detached.</p>
+            <p class="help-block">Only children in this project can be edited here. The selected checks become direct children. Their previous parents are replaced. Unselected local children are detached. Children in other projects are unchanged.</p>
             <p id="dependency-replacements" role="status"></p>
             <div class="text-right">
                 <button class="btn btn-sm btn-primary" type="submit">Save children</button>

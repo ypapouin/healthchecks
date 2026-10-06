@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta as td
-from threading import Barrier
+from threading import Barrier, Event
 from unittest import skipUnless
 from unittest.mock import Mock, patch
 
@@ -14,7 +14,13 @@ from django.test import TransactionTestCase
 from django.utils.timezone import now
 
 from hc.accounts.models import Project
-from hc.api.dependencies import DependencyGraph, set_dependencies
+from hc.api.dependencies import (
+    DependencyGraph,
+    connected_projects,
+    locked_projects,
+    set_dependencies,
+    set_sharing,
+)
 from hc.api.management.commands.sendalerts import Command
 from hc.api.models import Check, Flip
 from hc.api.tests.test_dependencies import InlineExecutor
@@ -160,3 +166,122 @@ class DependencyConcurrencyTestCase(TransactionTestCase):
             self.child, flip.grace_start
         )
         self.assertEqual([b["check"].pk for b in blockers], [root.pk])
+
+
+class SharedDependencyConcurrencyTestCase(DependencyConcurrencyTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.parent.shared = True
+        self.parent.save(update_fields=("shared",))
+        target = Project.objects.create(
+            owner=self.project.owner, badge_key="cross-project"
+        )
+        self.child.project = target
+        self.child.shared = True
+        self.child.save(update_fields=("project",))
+        self.child.shared = True
+        self.child.save(update_fields=("shared",))
+        set_dependencies(self.child, parent=f"shared:{self.parent.dependency_id}")
+
+    def test_concurrent_hierarchy_edits_cannot_create_cycle(self) -> None:
+        set_dependencies(self.child, parent=None)
+        errors = []
+
+        def attach(child: Check, parent: Check) -> None:
+            try:
+                set_dependencies(child, parent=f"shared:{parent.dependency_id}")
+            except ValidationError:
+                errors.append(True)
+
+        self.parallel(
+            lambda: attach(self.child, self.parent),
+            lambda: attach(self.parent, self.child),
+        )
+        self.assertEqual(len(errors), 1)
+
+    def test_revocation_racing_with_attachment_cannot_leave_external_link(self) -> None:
+        set_dependencies(self.child, parent=None)
+
+        def attach() -> None:
+            try:
+                set_dependencies(
+                    self.child, parent=f"shared:{self.parent.dependency_id}"
+                )
+            except ValidationError:
+                pass
+
+        self.parallel(
+            attach, lambda: set_sharing(self.parent, False, self.project.owner)
+        )
+        self.parent.refresh_from_db()
+        self.child.refresh_from_db()
+        self.assertFalse(self.parent.shared)
+        self.assertIsNone(self.child.parent_id)
+
+    def test_parent_failure_and_claim_are_serialized(self) -> None:
+        self.parent.ping("127.0.0.1", "http", "GET", "", b"", "success", None)
+        # Remove the initial Up flip to focus on the child's incident.
+        self.parent.flip_set.all().delete()
+        flip = self.pending()
+
+        def fail() -> None:
+            self.parent.ping("127.0.0.1", "http", "GET", "", b"", "fail", None)
+
+        with patch("hc.api.management.commands.sendalerts.notify", return_value=None):
+            self.parallel(self.process, fail)
+        flip.refresh_from_db()
+        parent_failure = self.parent.flip_set.get(new_status="down")
+        if flip.processed:
+            self.assertLessEqual(flip.processed, parent_failure.created)
+        else:
+            self.assertEqual(flip.notification_state, "waiting")
+
+    def test_revocation_and_worker_preserve_recovery_grace(self) -> None:
+        flip = self.pending()
+        flip.notification_state = "waiting"
+        flip.save()
+        with patch(
+            "hc.api.management.commands.sendalerts.notify", return_value=None
+        ) as notify:
+            self.parallel(
+                self.process,
+                lambda: set_sharing(self.parent, False, self.project.owner),
+            )
+            self.process()
+        flip.refresh_from_db()
+        self.assertEqual(flip.notification_state, "resuming")
+        self.assertIsNone(flip.processed)
+        notify.assert_not_called()
+
+    def test_lock_acquisition_retries_when_another_project_joins(self) -> None:
+        third = Project.objects.create(owner=self.project.owner, badge_key="third")
+        leaf = Check.objects.create(project=third)
+        discovered = Event()
+        attached = Event()
+
+        def attach() -> None:
+            close_old_connections()
+            try:
+                self.assertTrue(discovered.wait(timeout=10))
+                set_dependencies(leaf, parent=f"shared:{self.child.dependency_id}")
+            finally:
+                attached.set()
+                connections.close_all()
+
+        first = True
+
+        def discover(ids: set[int]) -> set[int]:
+            nonlocal first
+            component = connected_projects(ids)
+            if first:
+                first = False
+                discovered.set()
+                self.assertTrue(attached.wait(timeout=10))
+            return component
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(attach)
+            with patch("hc.api.dependencies.connected_projects", side_effect=discover):
+                with locked_projects(self.child.project_id) as held:
+                    self.assertIn(third.pk, held)
+            future.result(timeout=10)

@@ -182,6 +182,13 @@ body.dark #checks-table .integrations span.off {
 #checks-table.hierarchy + .dependency-tree-lines {
     display: block;
 }
+#checks-table.hierarchy {
+    --dependency-indent: 16px;
+}
+#checks-table.hierarchy .my-checks-name {
+    display: flow-root;
+    padding-left: 0;
+}
 #checks-table .check-notification-cell {
     max-width: 240px;
     overflow-wrap: anywhere;
@@ -201,6 +208,10 @@ body.dark #checks-table .integrations span.off {
     margin-right: 4px;
     padding-left: 0;
     padding-right: 0;
+}
+.hierarchy .dependency-toggle {
+    width: var(--dependency-indent);
+    margin-right: 2px;
 }
 .hierarchy .dependency-toggle[hidden] {
     display: block;
@@ -229,4 +240,11 @@ body.dark #checks-table .integrations span.off {
     mask: url("../img/parent.svg") center / contain no-repeat;
 }
 .hierarchy .dependency-parent { display: none; }
+.hierarchy .dependency-parent.external {
+    display: block;
+    /* Match the toggle, its 2px margin and the name's 1px border. */
+    margin-left: calc(var(--dependency-indent) + 3px);
+}
+.dependency-parent[hidden] { display: none; }
+#add-check-parent-sharing-help[hidden] { display: none; }
 .dependency-context .my-checks-name { opacity: 0.7; }

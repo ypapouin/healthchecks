@@ -13,9 +13,10 @@ from uuid import UUID
 from cronsim import CronSim, CronSimError
 from django.conf import settings
 from django.core.exceptions import ValidationError as ModelValidationError
+from django.core.paginator import InvalidPage, Paginator
 from django.core.signing import BadSignature
-from django.db import connection, transaction
-from django.db.models import Prefetch
+from django.db import connection
+from django.db.models import Prefetch, Q
 from django.db.models.functions import Length
 from django.http import (
     Http404,
@@ -38,9 +39,24 @@ from pydantic_core import PydanticCustomError
 
 from hc.accounts.models import Profile, Project
 from hc.api.decorators import ApiRequest, authorize, authorize_read, cors
-from hc.api.dependencies import DependencyGraph, lock_projects, locked_check
+from hc.api.dependencies import (
+    DependencyGraph,
+    locked_check,
+    locked_projects,
+    parent_project,
+    project_label,
+    resolve_parent,
+)
 from hc.api.forms import FlipsFiltersForm
-from hc.api.models import Channel, Check, Flip, Notification, Ping, prepare_durations
+from hc.api.models import (
+    Channel,
+    Check,
+    Flip,
+    Notification,
+    Ping,
+    isostring,
+    prepare_durations,
+)
 from hc.lib.badges import check_signature, get_badge_svg, get_badge_url
 from hc.lib.signing import unsign_bounce_id
 from hc.lib.string import is_valid_uuid_string, match_keywords
@@ -63,7 +79,7 @@ def guess_kind(schedule: str) -> str:
 class Spec(BaseModel):
     parent: str | None = Field(
         None,
-        pattern=r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+        pattern=r"^(shared:)?[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
     )
     channels: str | None = None
     desc: str | None = Field(None, max_length=10000)
@@ -319,15 +335,19 @@ def _lookup(project: Project, spec: Spec) -> Check | None:
 
 
 def _update(check: Check, spec: Spec, v: int) -> None:
+    extra = (
+        parent_project(check.project_id, spec.parent)
+        if v == 3 and "parent" in spec.model_fields_set
+        else check.project_id
+    )
     if check.pk:
-        with locked_check(check) as current:
+        with locked_check(check, extra) as current:
             if current.project_id != check.project_id:
                 raise Check.DoesNotExist
             _update_locked(current, spec, v)
         check.refresh_from_db()
     else:
-        with transaction.atomic():
-            lock_projects(check.project_id)
+        with locked_projects(check.project_id, extra):
             _update_locked(check, spec, v)
 
 
@@ -362,14 +382,7 @@ def _update_locked(check: Check, spec: Spec, v: int) -> None:
 
     update_fields = set()
     if v == 3 and "parent" in spec.model_fields_set:
-        parent = None
-        if spec.parent:
-            parent = Check.objects.filter(
-                project_id=check.project_id, code=spec.parent
-            ).first()
-            if parent is None:
-                raise ModelValidationError("Parent must belong to the same project.")
-        check.parent = parent
+        check.parent = resolve_parent(check.project_id, spec.parent)
         check.clean()
         update_fields.add("parent")
 
@@ -470,8 +483,47 @@ def get_checks(request: ApiRequest) -> JsonResponse:
     return JsonResponse({"checks": checks})
 
 
+@cors("GET")
+@authorize_read
+def shared_checks(request: ApiRequest) -> HttpResponse:
+    if request.v != 3:
+        raise Http404
+    checks = (
+        Check.objects.filter(shared=True)
+        .select_related("project")
+        .order_by("project__name", "name", "pk")
+    )
+    if query := request.GET.get("q"):
+        checks = checks.filter(
+            Q(name__icontains=query) | Q(project__name__icontains=query)
+        )
+    try:
+        page = Paginator(checks, 50).page(request.GET.get("page", "1"))
+    except InvalidPage:
+        return JsonResponse({"error": "Invalid page."}, status=400)
+    return JsonResponse(
+        {
+            "checks": [
+                {
+                    "id": f"shared:{c.dependency_id}",
+                    "name": c.name or "unnamed",
+                    "project": project_label(c.project),
+                    "status": c.get_status(),
+                    "last_success": isostring(c.last_success),
+                }
+                for c in page
+            ],
+            "next_page": page.next_page_number() if page.has_next() else None,
+        }
+    )
+
+
 @authorize
 def create_check(request: ApiRequest) -> HttpResponse:
+    if request.v == 3 and ({"shared", "dependency_id"} & request.json.keys()):
+        return JsonResponse(
+            {"error": "Sharing can only be changed in the web interface."}, status=400
+        )
     try:
         spec = Spec.model_validate(
             {
@@ -545,6 +597,11 @@ def update_check(request: ApiRequest, code: UUID) -> HttpResponse:
     check = get_object_or_404(Check, code=code)
     if check.project_id != request.project.id:
         return HttpResponseForbidden()
+
+    if request.v == 3 and ({"shared", "dependency_id"} & request.json.keys()):
+        return JsonResponse(
+            {"error": "Sharing can only be changed in the web interface."}, status=400
+        )
 
     try:
         spec = Spec.model_validate(

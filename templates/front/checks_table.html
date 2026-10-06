@@ -83,11 +83,11 @@
                 <span class="label label-tag">{{ tag }}</span>
                 {% endfor %}
             </div>
-            <div class="dependency-parent" {% if not check.dependency_info.parent %}hidden{% endif %}>
-                <span class="label label-tag dependency-parent-badge" title="{% if check.dependency_info.parent %}Parent: {{ check.dependency_info.parent.name }}{% endif %}">
+            <div class="dependency-parent{% if check.dependency_info.parent.external %} external{% endif %}" {% if not check.dependency_info.parent %}hidden{% endif %}>
+                <span class="label label-tag dependency-parent-badge" title="{% if check.dependency_info.parent %}Parent: {{ check.dependency_info.parent.label }}{% endif %}">
                     <span class="dependency-parent-icon" aria-hidden="true"></span>
                     <span class="sr-only">Parent: </span>
-                    <span class="dependency-parent-name">{{ check.dependency_info.parent.name }}</span>
+                    <span class="dependency-parent-name">{{ check.dependency_info.parent.label }}</span>
                 </span>
             </div>
         </td>

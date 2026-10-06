@@ -72,6 +72,7 @@ api_urls = [
 ]
 
 urlpatterns = [
+    path("api/v3/shared-checks/", views.shared_checks),
     path("ping/<uuid:code>", views.ping),
     path("ping/<uuid:code>/", include(uuid_urls)),
     path("ping/<slug:ping_key>/<slug:slug>", views.ping_by_slug),

@@ -150,6 +150,8 @@ class CheckDict(TypedDict):
     tz: NotRequired[str]
     parent: NotRequired[str | None]
     dependency: NotRequired[dict[str, Any]]
+    shared: NotRequired[bool]
+    dependency_id: NotRequired[str]
     last_success: NotRequired[str | None]
 
 
@@ -202,6 +204,8 @@ class Check(models.Model):
     parent = models.ForeignKey(
         "self", models.SET_NULL, null=True, blank=True, related_name="children"
     )
+    shared = models.BooleanField(default=False, db_index=True)
+    dependency_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
     created = models.DateTimeField(default=now)
     kind = models.CharField(max_length=10, default="simple", choices=CHECK_KINDS)
     timeout = models.DurationField(default=DEFAULT_TIMEOUT)
@@ -251,7 +255,7 @@ class Check(models.Model):
 
     def clean(self) -> None:
         super().clean()
-        from hc.api.dependencies import validate_graph
+        from hc.api.dependencies import load_ancestors, validate_graph
 
         if (
             self.pk
@@ -262,23 +266,39 @@ class Check(models.Model):
             self.parent_id = None
         checks = {c.id: c for c in Check.objects.filter(project_id=self.project_id)}
         checks[self.pk or 0] = self
+        load_ancestors(checks)
         validate_graph(checks, {pk: c.parent_id for pk, c in checks.items()})
 
     def save(self, *args: Any, **kwargs: Any) -> None:
-        from hc.api.dependencies import cancel_pending, lock_projects, wake_pending
+        from hc.api.dependencies import (
+            cancel_pending,
+            locked_projects,
+            update_reminders,
+            wake_pending,
+        )
 
         while True:
-            with transaction.atomic():
-                old_project = None
-                if self.pk:
-                    old_project = (
-                        Check.objects.filter(pk=self.pk)
-                        .values_list("project_id", flat=True)
-                        .first()
-                    )
-                lock_projects(
-                    *(p for p in (old_project, self.project_id) if p is not None)
+            old_project = (
+                Check.objects.filter(pk=self.pk)
+                .values_list("project_id", flat=True)
+                .first()
+                if self.pk
+                else None
+            )
+            parent_project = (
+                Check.objects.filter(pk=self.parent_id)
+                .values_list("project_id", flat=True)
+                .first()
+                if self.parent_id
+                else None
+            )
+            with locked_projects(
+                *(
+                    p
+                    for p in (old_project, self.project_id, parent_project)
+                    if p is not None
                 )
+            ):
                 old = Check.objects.filter(pk=self.pk).first() if self.pk else None
                 if old and old.project_id not in (old_project, self.project_id):
                     continue
@@ -290,6 +310,8 @@ class Check(models.Model):
                 transferred = (
                     old and writes_project and old.project_id != self.project_id
                 )
+                writes_shared = fields is None or "shared" in fields
+                revoked = old and writes_shared and old.shared and not self.shared
                 if transferred and old is not None:
                     detached = set(
                         Check.objects.filter(parent_id=self.pk).values_list(
@@ -297,10 +319,18 @@ class Check(models.Model):
                         )
                     )
                     self.parent_id = None
+                    self.shared = False
                     Check.objects.filter(parent_id=self.pk).update(parent=None)
                     if fields is not None:
-                        kwargs["update_fields"] = set(fields) | {"parent"}
+                        kwargs["update_fields"] = set(fields) | {"parent", "shared"}
                     wake_pending(old.project_id, detached)
+                elif revoked:
+                    external = Check.objects.filter(parent_id=self.pk).exclude(
+                        project_id=self.project_id
+                    )
+                    detached = set(external.values_list("id", flat=True))
+                    external.update(parent=None)
+                    wake_pending(self.project_id, detached)
                 if (
                     not old
                     or transferred
@@ -361,6 +391,7 @@ class Check(models.Model):
                     # Pausing removes this ancestor's requirements; resuming
                     # restores them. Recheck descendants without resetting grace.
                     wake_pending(self.project_id)
+                    transaction.on_commit(lambda: update_reminders({self.pk}))
             return
 
     def name_then_code(self) -> str:
@@ -633,6 +664,8 @@ class Check(models.Model):
             )
             result["dependency"] = dependency
             result["last_success"] = isostring(self.last_success)
+            result["shared"] = self.shared
+            result["dependency_id"] = str(self.dependency_id)
 
         return result
 
@@ -745,10 +778,12 @@ class Check(models.Model):
             ping.exitstatus = exitstatus
             ping.save()
 
-        if action == "success" and not was_up:
-            # A parent can recover from Late without a stored status transition.
-            # Resume reminders previously suspended for its descendants as well.
-            self.project.update_next_nag_dates()
+        if action == "success":
+            # Even an already-Up parent can satisfy a descendant's freshness
+            # requirement with this success and release suspended reminders.
+            from hc.api.dependencies import update_reminders
+
+            update_reminders({self.pk})
 
         # Upload ping body to S3 outside the DB transaction, because this operation
         # can potentially take a long time:

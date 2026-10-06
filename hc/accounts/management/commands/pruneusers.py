@@ -9,6 +9,7 @@ from django.db.models import Count, F
 from django.utils.timezone import now
 
 from hc.accounts.models import Profile
+from hc.api.dependencies import delete_users
 
 
 class Command(BaseCommand):
@@ -30,7 +31,7 @@ class Command(BaseCommand):
         q = q.annotate(n_teams=Count("memberships"))
         q = q.filter(date_joined__lt=month_ago, last_login=None, n_teams=0)
 
-        _n, summary = q.delete()
+        _n, summary = delete_users(q)
         count = summary.get("auth.User", 0)
         self.stdout.write(f"Pruned {count} never-logged-in user accounts.")
 
@@ -42,6 +43,6 @@ class Command(BaseCommand):
 
         for profile in pq:
             self.stdout.write(f"Deleting inactive {profile.user.email}")
-            profile.user.delete()
+            delete_users(User.objects.filter(pk=profile.user_id))
 
         return "Done!"

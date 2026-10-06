@@ -9,7 +9,6 @@ from uuid import UUID
 from django.contrib import admin
 from django.contrib.admin import ModelAdmin
 from django.core.paginator import Paginator
-from django.db import transaction
 from django.db.models import F, QuerySet
 from django.http import HttpRequest, HttpResponse
 from django.urls import reverse
@@ -17,7 +16,7 @@ from django.utils.html import format_html
 from django.utils.safestring import mark_safe
 from django_stubs_ext import WithAnnotations
 
-from hc.api.dependencies import lock_projects, wake_pending
+from hc.api.dependencies import can_share, deleting_checks, locked_projects
 from hc.api.models import Channel, Check, Flip, Notification, Ping
 from hc.lib.date import format_duration
 
@@ -34,7 +33,7 @@ class ChecksAdmin(ModelAdmin[Check]):
         css: ClassVar = {"all": ("css/admin/checks.css",)}
 
     search_fields = ("id", "name", "slug", "code", "project__owner__email")
-    readonly_fields = ("code", "badge_key", "last_success", "up_since")
+    readonly_fields = ("code", "badge_key", "dependency_id", "last_success", "up_since")
     raw_id_fields = ("project", "parent")
     list_select_related = ("project",)
     list_display = (
@@ -50,6 +49,16 @@ class ChecksAdmin(ModelAdmin[Check]):
     )
     list_filter = ("status", "kind", "last_ping", "last_start")
 
+    def get_readonly_fields(
+        self, request: HttpRequest, obj: Check | None = None
+    ) -> tuple[str, ...]:
+        fields = self.readonly_fields
+        if not request.user.is_superuser and (
+            obj is None or not can_share(request.user, obj.project)
+        ):
+            return (*fields, "shared")
+        return fields
+
     def changeform_view(
         self,
         request: HttpRequest,
@@ -58,32 +67,28 @@ class ChecksAdmin(ModelAdmin[Check]):
         extra_context: dict[str, Any] | None = None,
     ) -> HttpResponse:
         # Keep model form validation and save inside the same graph lock.
-        with transaction.atomic():
-            if request.method == "POST":
-                ids = (
-                    set(
-                        Check.objects.filter(pk=object_id).values_list(
-                            "project_id", flat=True
-                        )
+        ids: set[int] = set()
+        if request.method == "POST":
+            if object_id and object_id.isdecimal():
+                ids.update(
+                    Check.objects.filter(pk=object_id).values_list(
+                        "project_id", flat=True
                     )
-                    if object_id and object_id.isdecimal()
-                    else set()
                 )
-                if request.POST.get("project", "").isdigit():
-                    ids.add(int(request.POST["project"]))
-                lock_projects(*ids)
+            if request.POST.get("project", "").isdigit():
+                ids.add(int(request.POST["project"]))
+            if request.POST.get("parent", "").isdigit():
+                ids.update(
+                    Check.objects.filter(pk=request.POST["parent"]).values_list(
+                        "project_id", flat=True
+                    )
+                )
+        with locked_projects(*ids):
             return super().changeform_view(request, object_id, form_url, extra_context)
 
     def delete_queryset(self, request: HttpRequest, queryset: QuerySet[Check]) -> None:
-        with transaction.atomic():
-            ids = set(queryset.values_list("project_id", flat=True))
-            lock_projects(*ids)
-            detached = set(
-                Check.objects.filter(parent__in=queryset).values_list("id", flat=True)
-            )
+        with deleting_checks(queryset):
             super().delete_queryset(request, queryset)
-            for project_id in ids:
-                wake_pending(project_id, detached)
 
     def delete_model(self, request: HttpRequest, obj: Check) -> None:
         obj.rename_and_delete()
