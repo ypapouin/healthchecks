@@ -114,7 +114,7 @@ $(function () {
                     data.dependency.ancestors.forEach(function (ancestor) {
                         var item = document.createElement(ancestor.url ? "a" : "span");
                         if (ancestor.url) item.href = ancestor.url;
-                        item.textContent = ancestor.label;
+                        setDependencyLabel(item, ancestor);
                         path.append(item, " → ");
                     });
                     path.append(path.dataset.checkName);
@@ -122,7 +122,10 @@ $(function () {
                     blockers.replaceChildren();
                     data.dependency.blockers.forEach(function (b) {
                         var li = document.createElement("li");
-                        li.textContent = b.label + ": " + b.reason + ".";
+                        var label = document.createElement(b.url ? "a" : "span");
+                        if (b.url) label.href = b.url;
+                        setDependencyLabel(label, b);
+                        li.append(label, ": " + b.reason + ".");
                         if (!b.hidden) li.append(" Last success: ");
                         if (!b.hidden && b.last_success) {
                             var time = document.createElement("time");
@@ -142,7 +145,7 @@ $(function () {
                         var li = document.createElement("li");
                         var item = document.createElement(child.url ? "a" : "span");
                         if (child.url) item.href = child.url;
-                        item.textContent = (child.external ? child.project + " — " : "") + child.name;
+                        setDependencyLabel(item, child);
                         li.appendChild(item);
                         children.appendChild(li);
                     });

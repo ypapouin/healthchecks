@@ -206,6 +206,18 @@ body {
     color: #5bc0de;
 }
 
+.dependency-project::before {
+    content: "";
+    display: inline-block;
+    width: 1em;
+    height: 1em;
+    margin-right: 0.3em;
+    vertical-align: -0.125em;
+    background-color: currentColor;
+    -webkit-mask: url("../img/project.svg") center / contain no-repeat;
+    mask: url("../img/project.svg") center / contain no-repeat;
+}
+
 .label.label-start {
     color: var(--label-start-color);
     border: 1px solid #117a3f;
@@ -413,4 +425,3 @@ input[type="number"]::-webkit-inner-spin-button {
 select.form-control {
     background-color: var(--panel-bg);
 }
-

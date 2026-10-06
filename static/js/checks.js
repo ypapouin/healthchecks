@@ -431,7 +431,7 @@ $(function () {
                         var parentInfo = row.querySelector(".dependency-parent");
                         parentInfo.hidden = !el.dependency.parent;
                         parentInfo.classList.toggle("external", !!el.dependency.parent?.external);
-                        parentInfo.querySelector(".dependency-parent-name").textContent = el.dependency.parent ? el.dependency.parent.label : "";
+                        setDependencyLabel(parentInfo.querySelector(".dependency-parent-name"), el.dependency.parent);
                         parentInfo.querySelector(".dependency-parent-badge").title = el.dependency.parent ? "Parent: " + el.dependency.parent.label : "";
                         updateDependencyStatus(row.querySelector(".dependency-status"), el.dependency);
                         if (el.dependency.pending) pendingCount++;

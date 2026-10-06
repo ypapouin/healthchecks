@@ -1,3 +1,10 @@
+function setDependencyLabel(element, dependency) {
+    element.textContent = dependency
+        ? dependency.label || (dependency.external ? dependency.project + " — " : "") + dependency.name
+        : "";
+    element.classList.toggle("dependency-project", !!dependency?.external && !dependency.hidden);
+}
+
 function setDependencyTooltip(element, text) {
     if (element.getAttribute("aria-label") === text) return;
     element.setAttribute("aria-label", text);
@@ -52,6 +59,12 @@ function updateDependencyStatus(element, dependency) {
 }
 
 $(function () {
+    $("#dependency-sharing-label").tooltip({
+        container: "body",
+        placement: "auto top",
+        html: false
+    });
+
     $(".dependency-status, #dependency-status").tooltip({
         container: "body",
         selector: '[role="img"]',
@@ -62,26 +75,42 @@ $(function () {
         }
     });
 
+    function renderDependencyOption(data, escape) {
+        var external = data.external === true || data.external === "true";
+        return '<div' + (external ? ' class="dependency-project"' : '') + '>' + escape(data.text) + '</div>';
+    }
     document.querySelectorAll("select.dependency-select").forEach(function (el) {
-        new TomSelect(el, {create: false, allowEmptyOption: true, plugins: el.multiple ? ["remove_button"] : []});
+        new TomSelect(el, {
+            create: false,
+            allowEmptyOption: true,
+            plugins: el.multiple ? ["remove_button"] : [],
+            render: {item: renderDependencyOption, option: renderDependencyOption}
+        });
     });
     var parentSelect = document.getElementById("dependency-parent");
     if (parentSelect) {
         var initialParent = parentSelect.value;
         var saveParent = document.getElementById("dependency-parent-save");
+        var cancelParent = document.getElementById("dependency-parent-cancel");
         function updateParentSave() {
             saveParent.hidden = parentSelect.value === initialParent;
+            cancelParent.hidden = saveParent.hidden;
             document.getElementById("dependency-parent-sharing-help").hidden = !parentSelect.value.startsWith("shared:");
         }
         parentSelect.addEventListener("change", updateParentSave);
+        cancelParent.addEventListener("click", function () {
+            parentSelect.tomselect.setValue(initialParent);
+            parentSelect.tomselect.focus();
+        });
         updateParentSave();
         $(document).on("dependencies:updated", function (event, data) {
             var parent = data.dependency.parent;
             var value = parent?.id || "";
-            if (parentSelect.value === initialParent) {
-                if (parent?.id && !parentSelect.tomselect.options[value]) {
-                    parentSelect.tomselect.addOption({value: value, text: parent.label});
-                }
+            if (parent?.id && !parentSelect.tomselect.options[value]) {
+                parentSelect.tomselect.addOption({value: value, text: parent.label, external: parent.external});
+            }
+            // Reapplying an unchanged value closes the dropdown during editing.
+            if (parentSelect.value === initialParent && value !== initialParent) {
                 parentSelect.tomselect.setValue(value, true);
             }
             initialParent = value;
@@ -115,6 +144,16 @@ $(function () {
         var replaced = Array.from(this.selectedOptions).filter(o => o.textContent.includes("replaces parent:"));
         $("#dependency-replacements").text(replaced.map(o => o.textContent).join("; "));
     }).trigger("change");
+    var childrenSelect = document.getElementById("dependency-children");
+    if (childrenSelect) {
+        var initialChildren = Array.from(childrenSelect.selectedOptions, option => option.value);
+        document.getElementById("dependency-children-cancel").addEventListener("click", function () {
+            childrenSelect.tomselect.setValue(initialChildren);
+            var editor = childrenSelect.closest("details");
+            editor.open = false;
+            editor.querySelector("summary").focus();
+        });
+    }
 
     function countdown() {
         document.querySelectorAll(".alert-resuming[data-deadline]").forEach(updateRecoveryTooltip);

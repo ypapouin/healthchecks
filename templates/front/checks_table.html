@@ -87,7 +87,7 @@
                 <span class="label label-tag dependency-parent-badge" title="{% if check.dependency_info.parent %}Parent: {{ check.dependency_info.parent.label }}{% endif %}">
                     <span class="dependency-parent-icon" aria-hidden="true"></span>
                     <span class="sr-only">Parent: </span>
-                    <span class="dependency-parent-name">{{ check.dependency_info.parent.label }}</span>
+                    <span class="dependency-parent-name{% if check.dependency_info.parent.external and not check.dependency_info.parent.hidden %} dependency-project{% endif %}">{{ check.dependency_info.parent.label }}</span>
                 </span>
             </div>
         </td>

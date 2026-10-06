@@ -196,9 +196,25 @@ ul.crosses li:before {
     margin: 8px 0 0;
 }
 
-#dependency-parent-form,
-#dependency-sharing-form {
+#dependency-parent-form {
     display: block;
+}
+
+#dependency-sharing-form {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-height: 30px;
+    margin-bottom: 16px;
+}
+
+#dependency-sharing-label {
+    margin-bottom: 0;
+}
+
+#dependency-sharing-save {
+    flex-shrink: 0;
 }
 
 #dependency-parent-controls {
@@ -217,11 +233,13 @@ ul.crosses li:before {
     padding: 5px 10px;
 }
 
-#dependency-parent-save {
+#dependency-parent-save,
+#dependency-parent-cancel {
     flex-shrink: 0;
 }
 
 #dependency-parent-save[hidden],
+#dependency-parent-cancel[hidden],
 #dependency-sharing-save[hidden],
 #dependency-parent-sharing-help[hidden],
 #dependency-notification[hidden],

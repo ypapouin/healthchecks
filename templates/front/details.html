@@ -146,7 +146,7 @@
                         {% if last_notification %}Last notification: {{ last_notification|timezone:tz|date:"j M Y, H:i T" }}.{% else %}No notification recorded yet.{% endif %}
                     </p>
                     <ul id="dependency-blockers">
-                        {% for blocker in check.dependency_info.blockers %}<li>{{ blocker.label }}: {{ blocker.reason }}.{% if not blocker.hidden %} Last success: {% if blocker.last_success %}<time datetime="{{ blocker.last_success }}">{{ blocker.last_success }}</time>{% else %}never{% endif %}.{% endif %}</li>{% endfor %}
+                        {% for blocker in check.dependency_info.blockers %}<li>{% if blocker.url %}<a href="{{ blocker.url }}">{% endif %}<span{% if blocker.external and not blocker.hidden %} class="dependency-project"{% endif %}>{{ blocker.label }}</span>{% if blocker.url %}</a>{% endif %}: {{ blocker.reason }}.{% if not blocker.hidden %} Last success: {% if blocker.last_success %}<time datetime="{{ blocker.last_success }}">{{ blocker.last_success }}</time>{% else %}never{% endif %}.{% endif %}</li>{% endfor %}
                     </ul>
                     <p id="dependency-help" class="help-block" {% if not check.dependency_info.parent %}hidden{% endif %}>Paused ancestors are ignored; their parents are still checked. All other ancestors must be Up and have succeeded since this check's grace period began. Explicit failures alert immediately.</p>
                 </div>
